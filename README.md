@@ -83,11 +83,31 @@ cd gemini-web-to-api
 
 ### Step 3 — Build and run
 
+Choose whichever method suits your setup:
+
+#### 🐳 Docker Compose (recommended)
+
 ```bash
 docker compose up -d --build
 ```
 
 > **Why `--build`?** Building locally ensures the image is compiled for your machine's architecture (amd64, arm64, etc.) and avoids any compatibility issues.
+
+#### 🐹 Go (direct)
+
+Requires [Go 1.21+](https://golang.org/dl/) installed.
+
+```bash
+go run cmd/server/main.go
+```
+
+#### ⚡ Task (dev mode)
+
+Requires [Task](https://taskfile.dev) installed.
+
+```bash
+task dev
+```
 
 ### Step 4 — Test it
 
