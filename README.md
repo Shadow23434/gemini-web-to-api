@@ -6,6 +6,7 @@
   <a href="https://github.com/ntthanh2603/gemini-web-to-api/releases"><img src="https://img.shields.io/github/v/release/ntthanh2603/gemini-web-to-api?style=flat-square&logo=github&color=3670ad" alt="Release"></a>
   <a href="https://golang.org/"><img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go" alt="Go Version"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker" alt="Docker"></a>
+  <a href="https://github.com/ntthanh2603/gemini-web-to-api/pkgs/container/gemini-web-to-api"><img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker" alt="Docker"></a>
   <a href="https://github.com/ntthanh2603/gemini-web-to-api/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ntthanh2603/gemini-web-to-api?style=flat-square&color=orange" alt="License"></a>
   <img src="https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=flat-square" alt="Maintained">
 </p>
@@ -23,12 +24,9 @@
   Access Gemini's power without API keys — just use your cookies!
 </p>
 
-> [!CAUTION]
-> ### ⚖️ DISCLAIMER & WARNING
-> 
-> **Account Risk:** Using this tool violates Google's Terms of Service. This may lead to a **permanent suspension** of your Google account. The author assumes no responsibility for any losses, damages, or account bans incurred. 
->
-> **Educational Purpose Only:** This project is intended for **research and educational purposes only**. Please refrain from any commercial use and act responsibly when deploying or modifying this tool. Use strictly at your own risk.
+> [!NOTE]
+> This project is intended for **research and educational purposes only**. Please use responsibly and refrain from any commercial use.
+
 ---
 
 ## 🎯 Why AI Bridges?
@@ -60,18 +58,65 @@ git clone https://github.com/ntthanh2603/gemini-web-to-api.git
 cd gemini-web-to-api
 ```
 
-### Step 2 — Configure your cookies
+### Step 2 — Choose your run method
+
+Pick whichever method suits your setup, then follow the matching setup instructions:
+
+---
+
+#### 🐳 Docker Run (pre-built image)
+
+No cloning or `.env` file needed — just pass your cookie values directly via `-e` flags.
+
+**Get your cookies first:**
+
+> [!WARNING]
+> Keep these values secure and **never share or commit them** — they provide direct access to your Google account.
 
 1. Go to [gemini.google.com](https://gemini.google.com) and sign in
-2. Press `F12` → **Application** tab → **Cookies**
-3. Copy the values of `__Secure-1PSID` and `__Secure-1PSIDTS`
-4. Create your `.env` file from the provided example:
+2. Press `F12` → **Application** → **Storage** → **Cookies**
+3. Copy `__Secure-1PSID` and `__Secure-1PSIDTS`
+
+**Then run:**
+
+```bash
+docker run -d -p 4981:4981 \
+  -e GEMINI_1PSID="your_psid_here" \
+  -e GEMINI_1PSIDTS="your_psidts_here" \
+  -e GEMINI_REFRESH_INTERVAL=30 \
+  -e GEMINI_MAX_RETRIES=3 \
+  -e APP_ENV=production \
+  -v ./cookies:/home/appuser/.cookies \
+  --tmpfs /tmp:rw,size=512m \
+  --tmpfs /home/appuser/.cache:rw,size=256m \
+  --name gemini-web-to-api \
+  --restart unless-stopped \
+  ghcr.io/ntthanh2603/gemini-web-to-api:latest
+```
+
+**Done!** Skip to [Step 3 — Test it](#step-3--test-it). 🎉
+
+---
+
+#### 🐳 Docker Compose (build locally)
+
+Best if you want to build for your specific architecture (amd64, arm64, etc.).
+
+**Get your cookies and configure `.env`:**
+
+> [!WARNING]
+> Keep these values secure and **never commit your `.env` file** — it contains credentials that provide access to your Google account.
+
+1. Go to [gemini.google.com](https://gemini.google.com) and sign in
+2. Press `F12` → **Application** → **Storage** → **Cookies**
+3. Copy `__Secure-1PSID` and `__Secure-1PSIDTS`
+4. Create your `.env` from the example:
 
    ```bash
    cp .env.example .env
    ```
 
-5. Open `.env` and paste your cookie values:
+5. Paste your cookie values into `.env`:
 
    ```env
    GEMINI_1PSID=your_psid_here
@@ -81,21 +126,19 @@ cd gemini-web-to-api
    APP_ENV=production
    ```
 
-### Step 3 — Build and run
-
-Choose whichever method suits your setup:
-
-#### 🐳 Docker Compose (recommended)
+**Then run:**
 
 ```bash
 docker compose up -d --build
 ```
 
-> **Why `--build`?** Building locally ensures the image is compiled for your machine's architecture (amd64, arm64, etc.) and avoids any compatibility issues.
+**Done!** Skip to [Step 3 — Test it](#step-3--test-it). 🎉
+
+---
 
 #### 🐹 Go (direct)
 
-Requires [Go 1.21+](https://golang.org/dl/) installed.
+Requires [Go 1.21+](https://golang.org/dl/). Follow the same `.env` setup as Docker Compose above, then:
 
 ```bash
 go run cmd/server/main.go
@@ -103,13 +146,13 @@ go run cmd/server/main.go
 
 #### ⚡ Task (dev mode)
 
-Requires [Task](https://taskfile.dev) installed.
+Requires [Task](https://taskfile.dev). Follow the same `.env` setup as Docker Compose above, then:
 
 ```bash
 task dev
 ```
 
-### Step 4 — Test it
+### Step 3 — Test it
 
 ```bash
 curl -X POST http://localhost:4981/openai/v1/chat/completions \
@@ -255,6 +298,12 @@ If you find this project useful, please consider giving it a star! ⭐
 - **GitHub**: [ntthanh2603/gemini-web-to-api](https://github.com/ntthanh2603/gemini-web-to-api)
 - **Gemini Web**: [gemini.google.com](https://gemini.google.com)
 - **Issues**: [Report a bug](https://github.com/ntthanh2603/gemini-web-to-api/issues)
+
+---
+
+## ⚖️ Disclaimer
+
+This project is not affiliated with Google. It uses reverse-engineered web cookies and may not comply with [Google's Terms of Service](https://policies.google.com/terms). Use at your own risk — the author assumes no responsibility for any account actions or data loss.
 
 ---
 
