@@ -1,8 +1,10 @@
 package openai
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	models "gemini-web-to-api/internal/commons/models"
@@ -66,7 +68,7 @@ func (h *OpenAIController) HandleModels(c fiber.Ctx) error {
 
 // HandleChatCompletions accepts requests in OpenAI format
 // @Summary Chat Completions (OpenAI)
-// @Description Generates a completion for the chat message
+// @Description Generates a completion for the chat message (supports stream=true)
 // @Tags OpenAI
 // @Accept json
 // @Produce json
@@ -81,6 +83,10 @@ func (h *OpenAIController) HandleChatCompletions(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorToResponse(fmt.Errorf("invalid request body: %w", err), "invalid_request_error"))
 	}
 
+	if req.Stream {
+		return h.handleChatCompletionsStream(c, req)
+	}
+
 	// Add timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -92,6 +98,103 @@ func (h *OpenAIController) HandleChatCompletions(c fiber.Ctx) error {
 	}
 
 	return c.JSON(response)
+}
+
+// handleChatCompletionsStream handles streaming responses using SSE (Server-Sent Events)
+// as expected by OpenAI-compatible clients like Roo Code.
+func (h *OpenAIController) handleChatCompletionsStream(c fiber.Ctx, req dto.ChatCompletionRequest) error {
+	c.Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+
+	c.RequestCtx().SetBodyStreamWriter(func(w *bufio.Writer) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		response, err := h.service.CreateChatCompletion(ctx, req)
+		if err != nil {
+			h.log.Error("Stream: GenerateContent failed", zap.Error(err), zap.String("model", req.Model))
+			errChunk := map[string]interface{}{
+				"error": map[string]string{
+					"message": err.Error(),
+					"type":    "api_error",
+				},
+			}
+			data := utils.MarshalJSONSafely(h.log, errChunk)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(data))
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+			_ = w.Flush()
+			return
+		}
+
+		id := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+		created := time.Now().Unix()
+		text := ""
+		if len(response.Choices) > 0 {
+			text = response.Choices[0].Message.Content
+		}
+
+		// First chunk: send role delta
+		roleChunk := dto.ChatCompletionChunk{
+			ID:      id,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   req.Model,
+			Choices: []dto.ChunkChoice{
+				{Index: 0, Delta: models.Delta{Role: "assistant"}},
+			},
+		}
+		data := utils.MarshalJSONSafely(h.log, roleChunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(data))
+		_ = w.Flush()
+
+		// Content chunks: split by word
+		words := strings.Fields(text)
+		for i, word := range words {
+			content := word
+			if i < len(words)-1 {
+				content += " "
+			}
+			chunk := dto.ChatCompletionChunk{
+				ID:      id,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   req.Model,
+				Choices: []dto.ChunkChoice{
+					{Index: 0, Delta: models.Delta{Content: content}},
+				},
+			}
+			chunkData := utils.MarshalJSONSafely(h.log, chunk)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", string(chunkData)); err != nil {
+				h.log.Error("Stream: failed to write chunk", zap.Error(err), zap.Int("word_index", i))
+				return
+			}
+			if !utils.SleepWithCancel(ctx, 10*time.Millisecond) {
+				return
+			}
+			if err := w.Flush(); err != nil {
+				return
+			}
+		}
+
+		// Final chunk: finish_reason=stop
+		finalChunk := dto.ChatCompletionChunk{
+			ID:      id,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   req.Model,
+			Choices: []dto.ChunkChoice{
+				{Index: 0, Delta: models.Delta{}, FinishReason: "stop"},
+			},
+		}
+		finalData := utils.MarshalJSONSafely(h.log, finalChunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(finalData))
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		_ = w.Flush()
+	})
+
+	return nil
 }
 
 func (h *OpenAIController) convertToOpenAIFormat(response *providers.Response, model string) dto.ChatCompletionResponse {

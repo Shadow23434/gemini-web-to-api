@@ -30,8 +30,13 @@ func (s *OpenAIService) ListModels() []providers.ModelInfo {
 }
 
 func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCompletionRequest) (*dto.ChatCompletionResponse, error) {
+	commonMessages := make([]models.Message, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		commonMessages = append(commonMessages, m.ToCommonMessage())
+	}
+
 	// Logic: Validate messages
-	if err := utils.ValidateMessages(req.Messages); err != nil {
+	if err := utils.ValidateMessages(commonMessages); err != nil {
 		return nil, err
 	}
 
@@ -41,7 +46,7 @@ func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCo
 	}
 
 	// Logic: Build Prompt
-	prompt := utils.BuildPromptFromMessages(req.Messages, "")
+	prompt := utils.BuildPromptFromMessages(commonMessages, "")
 	if prompt == "" {
 		return nil, fmt.Errorf("no valid content in messages")
 	}

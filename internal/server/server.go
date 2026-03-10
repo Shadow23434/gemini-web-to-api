@@ -35,6 +35,9 @@ func NewGeminiWebToAPI(log *zap.Logger) *fiber.App {
 	// Health check endpoint — used by Docker/K8s/cloud platforms
 	app.Get("/health", HealthCheck)
 
+	// API info endpoint for auto-detection
+	app.Get("/", APIInfo)
+
 	return app
 }
 
@@ -49,6 +52,29 @@ func HealthCheck(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"status":  "ok",
 		"service": "gemini-web-to-api",
+	})
+}
+
+// APIInfo godoc
+// @Summary      API Information
+// @Description  Returns API metadata and available endpoint formats
+// @Tags         System
+// @Produce      json
+// @Success      200  {object}  object
+// @Router       / [get]
+func APIInfo(c fiber.Ctx) error {
+	return c.JSON(fiber.Map{
+		"service":     "gemini-web-to-api",
+		"version":     "1.0",
+		"description": "Reverse-engineered API for Gemini web app",
+		"endpoints": fiber.Map{
+			"openai":  "/openai/v1 or /v1 (OpenAI-compatible)",
+			"claude":  "/claude/v1 (Anthropic-compatible)",
+			"gemini":  "/gemini/v1beta (Google Gemini native)",
+			"swagger": "/swagger",
+			"health":  "/health",
+		},
+		"compatible_with": []string{"OpenAI", "Anthropic Claude", "Google Gemini"},
 	})
 }
 
