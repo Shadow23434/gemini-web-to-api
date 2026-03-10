@@ -1,0 +1,470 @@
+basePath: /
+definitions:
+  dto.Candidate:
+    properties:
+      content:
+        $ref: '#/definitions/dto.Content'
+      finishMessage:
+        type: string
+      finishReason:
+        type: string
+      index:
+        type: integer
+    type: object
+  dto.ChatCompletionRequest:
+    properties:
+      max_tokens:
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/models.Message'
+        type: array
+      model:
+        type: string
+      stream:
+        type: boolean
+      temperature:
+        type: number
+    type: object
+  dto.ChatCompletionResponse:
+    properties:
+      choices:
+        items:
+          $ref: '#/definitions/dto.Choice'
+        type: array
+      created:
+        type: integer
+      id:
+        type: string
+      model:
+        type: string
+      object:
+        type: string
+      usage:
+        $ref: '#/definitions/models.Usage'
+    type: object
+  dto.Choice:
+    properties:
+      finish_reason:
+        type: string
+      index:
+        type: integer
+      message:
+        $ref: '#/definitions/models.Message'
+    type: object
+  dto.ConfigContent:
+    properties:
+      text:
+        type: string
+      type:
+        description: '"text"'
+        type: string
+    type: object
+  dto.Content:
+    properties:
+      parts:
+        items:
+          $ref: '#/definitions/dto.Part'
+        type: array
+      role:
+        type: string
+    type: object
+  dto.GeminiGenerateRequest:
+    properties:
+      contents:
+        items:
+          $ref: '#/definitions/dto.Content'
+        type: array
+      generationConfig:
+        $ref: '#/definitions/dto.GenerationConfig'
+      safety_settings:
+        items:
+          additionalProperties:
+            type: string
+          type: object
+        type: array
+    type: object
+  dto.GeminiGenerateResponse:
+    properties:
+      candidates:
+        items:
+          $ref: '#/definitions/dto.Candidate'
+        type: array
+      usageMetadata:
+        $ref: '#/definitions/dto.UsageMetadata'
+    type: object
+  dto.GeminiModel:
+    properties:
+      description:
+        type: string
+      displayName:
+        type: string
+      name:
+        type: string
+      supportedGenerationMethods:
+        items:
+          type: string
+        type: array
+      version:
+        type: string
+    type: object
+  dto.GeminiModelsResponse:
+    properties:
+      models:
+        items:
+          $ref: '#/definitions/dto.GeminiModel'
+        type: array
+    type: object
+  dto.GenerationConfig:
+    properties:
+      maxOutputTokens:
+        type: integer
+      temperature:
+        type: number
+      topK:
+        type: integer
+      topP:
+        type: number
+    type: object
+  dto.InlineData:
+    properties:
+      data:
+        type: string
+      mimeType:
+        type: string
+    type: object
+  dto.MessageRequest:
+    properties:
+      max_tokens:
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/models.Message'
+        type: array
+      model:
+        type: string
+      stream:
+        type: boolean
+      system:
+        type: string
+    type: object
+  dto.MessageResponse:
+    properties:
+      content:
+        items:
+          $ref: '#/definitions/dto.ConfigContent'
+        type: array
+      id:
+        type: string
+      model:
+        type: string
+      role:
+        description: '"assistant"'
+        type: string
+      stop_reason:
+        type: string
+      type:
+        description: '"message"'
+        type: string
+      usage:
+        $ref: '#/definitions/models.Usage'
+    type: object
+  dto.Part:
+    properties:
+      inlineData:
+        $ref: '#/definitions/dto.InlineData'
+      text:
+        type: string
+    type: object
+  dto.UsageMetadata:
+    properties:
+      candidatesTokenCount:
+        type: integer
+      promptTokenCount:
+        type: integer
+      totalTokenCount:
+        type: integer
+    type: object
+  models.Message:
+    properties:
+      content:
+        type: string
+      role:
+        type: string
+    type: object
+  models.ModelData:
+    properties:
+      created:
+        type: integer
+      created_at:
+        type: integer
+      display_name:
+        type: string
+      id:
+        type: string
+      object:
+        type: string
+      owned_by:
+        type: string
+      type:
+        type: string
+    type: object
+  models.ModelListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/models.ModelData'
+        type: array
+      object:
+        type: string
+    type: object
+  models.Usage:
+    properties:
+      completion_tokens:
+        type: integer
+      input_tokens:
+        type: integer
+      output_tokens:
+        type: integer
+      prompt_tokens:
+        type: integer
+      total_tokens:
+        type: integer
+    type: object
+host: localhost:4981
+info:
+  contact: {}
+  description: ✨Reverse-engineered API for Gemini web app. It can be used as a genuine
+    API key from OpenAI, Gemini, and Claude.
+  title: Gemini Web To API
+  version: "1.0"
+paths:
+  /claude/v1/messages:
+    post:
+      consumes:
+      - application/json
+      description: Sends a message to the Claude model
+      parameters:
+      - description: Message Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.MessageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.MessageResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Send Message (Claude)
+      tags:
+      - Claude
+  /claude/v1/messages/count_tokens:
+    post:
+      consumes:
+      - application/json
+      description: Estimates the number of tokens for a request
+      parameters:
+      - description: Message Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.MessageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Count Tokens (Claude)
+      tags:
+      - Claude
+  /claude/v1/models:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of available Claude models
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List Claude Models
+      tags:
+      - Claude
+  /claude/v1/models/{model_id}:
+    get:
+      consumes:
+      - application/json
+      description: Get details of a specific Claude model
+      parameters:
+      - description: Model ID
+        in: path
+        name: model_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Claude Model
+      tags:
+      - Claude
+  /gemini/v1beta/models:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of models supported by the Gemini API
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.GeminiModelsResponse'
+      summary: List Gemini Models
+      tags:
+      - Gemini
+  /gemini/v1beta/models/{model}:generateContent:
+    post:
+      consumes:
+      - application/json
+      description: Generates content using the Gemini model
+      parameters:
+      - description: Model ID
+        in: path
+        name: model
+        required: true
+        type: string
+      - description: Generate Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.GeminiGenerateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.GeminiGenerateResponse'
+      summary: Generate Content (Gemini)
+      tags:
+      - Gemini
+  /gemini/v1beta/models/{model}:streamGenerateContent:
+    post:
+      consumes:
+      - application/json
+      description: Streams generated content using the Gemini model
+      parameters:
+      - description: Model ID
+        in: path
+        name: model
+        required: true
+        type: string
+      - description: Generate Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.GeminiGenerateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Chunked response
+          schema:
+            type: string
+      summary: Stream Generate Content (Gemini)
+      tags:
+      - Gemini
+  /health:
+    get:
+      description: Returns the health status of the service. Used by Docker/K8s/cloud
+        platforms to monitor the service.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Service is healthy
+          schema:
+            properties:
+              service:
+                type: string
+              status:
+                type: string
+            type: object
+      summary: Health check
+      tags:
+      - System
+  /openai/v1/chat/completions:
+    post:
+      consumes:
+      - application/json
+      description: Generates a completion for the chat message
+      parameters:
+      - description: Chat Completion Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ChatCompletionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ChatCompletionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Chat Completions (OpenAI)
+      tags:
+      - OpenAI
+  /openai/v1/models:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of models supported by the OpenAI-compatible API
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.ModelListResponse'
+      summary: List OpenAI Models
+      tags:
+      - OpenAI
+swagger: "2.0"
