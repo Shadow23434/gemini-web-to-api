@@ -155,6 +155,161 @@ const docTemplate = `{
                 }
             }
         },
+        "/gemini/v1beta/deepresearch": {
+            "post": {
+                "description": "Performs deep research on a topic using Gemini, searching the web and synthesizing a comprehensive report. This is a blocking call that returns only when research is complete (may take several minutes).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Deep Research (synchronous)",
+                "parameters": [
+                    {
+                        "description": "Deep Research Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.DeepResearchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.DeepResearchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request – query is missing",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/deepresearch/create": {
+            "post": {
+                "description": "Start a deep research task. Set stream=true for realtime SSE progress, or omit for background polling.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Create Deep Research Interaction",
+                "parameters": [
+                    {
+                        "description": "Interaction Create Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.InteractionCreateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/dto.InteractionResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/deepresearch/stream": {
+            "post": {
+                "description": "Streams deep research progress in real-time using Server-Sent Events (SSE).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Deep Research (streaming SSE)",
+                "parameters": [
+                    {
+                        "description": "Deep Research Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.DeepResearchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SSE stream of DeepResearchStreamEvent JSON objects",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request – query is missing",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/deepresearch/{id}": {
+            "get": {
+                "description": "Returns the current status and result of a background research task.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Get Deep Research Interaction status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Task ID returned by create",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.InteractionResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
         "/gemini/v1beta/models": {
             "get": {
                 "description": "Returns a list of models supported by the Gemini API",
@@ -467,6 +622,82 @@ const docTemplate = `{
                 }
             }
         },
+        "dto.DeepResearchRequest": {
+            "type": "object",
+            "properties": {
+                "language": {
+                    "description": "Language for the response (optional, e.g. \"en\", \"vi\")",
+                    "type": "string"
+                },
+                "max_sources": {
+                    "description": "MaxSources maximum number of web sources to consult (optional)",
+                    "type": "integer"
+                },
+                "model": {
+                    "description": "Model to use (optional, defaults to best available)",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "Query is the research topic or question",
+                    "type": "string"
+                }
+            }
+        },
+        "dto.DeepResearchResponse": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "description": "CompletedAt timestamp (Unix seconds), 0 if not completed",
+                    "type": "integer"
+                },
+                "created_at": {
+                    "description": "CreatedAt timestamp (Unix seconds)",
+                    "type": "integer"
+                },
+                "duration_ms": {
+                    "description": "DurationMs total research duration in milliseconds",
+                    "type": "integer"
+                },
+                "error": {
+                    "description": "Error message if status is \"failed\"",
+                    "type": "string"
+                },
+                "id": {
+                    "description": "ID of this research session",
+                    "type": "string"
+                },
+                "model": {
+                    "description": "Model used",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "Query that was researched",
+                    "type": "string"
+                },
+                "sources": {
+                    "description": "Sources used in research",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ResearchSource"
+                    }
+                },
+                "status": {
+                    "description": "Status: \"in_progress\", \"completed\", \"failed\"",
+                    "type": "string"
+                },
+                "steps": {
+                    "description": "Steps of research performed",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ResearchStep"
+                    }
+                },
+                "summary": {
+                    "description": "Summary is the synthesized research report",
+                    "type": "string"
+                }
+            }
+        },
         "dto.GeminiGenerateRequest": {
             "type": "object",
             "properties": {
@@ -566,6 +797,98 @@ const docTemplate = `{
                 }
             }
         },
+        "dto.InteractionCreateRequest": {
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "description": "Agent selects the research mode (e.g. \"deep-research-pro-preview-12-2025\")",
+                    "type": "string"
+                },
+                "background": {
+                    "description": "Background if true the task runs asynchronously (always true for this endpoint)",
+                    "type": "boolean"
+                },
+                "input": {
+                    "description": "Input is the research query / topic",
+                    "type": "string"
+                },
+                "language": {
+                    "description": "Language for the output report",
+                    "type": "string"
+                },
+                "max_sources": {
+                    "description": "MaxSources max number of web sources to consult",
+                    "type": "integer"
+                },
+                "stream": {
+                    "description": "Stream if true the server returns an SSE stream of InteractionResponse events",
+                    "type": "boolean"
+                }
+            }
+        },
+        "dto.InteractionOutput": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "description": "Text is the research report text",
+                    "type": "string"
+                }
+            }
+        },
+        "dto.InteractionResponse": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "description": "CompletedAt Unix timestamp (0 if not yet completed)",
+                    "type": "integer"
+                },
+                "created_at": {
+                    "description": "CreatedAt Unix timestamp",
+                    "type": "integer"
+                },
+                "duration_ms": {
+                    "description": "DurationMs total research duration in milliseconds",
+                    "type": "integer"
+                },
+                "error": {
+                    "description": "Error message if status is \"failed\"",
+                    "type": "string"
+                },
+                "id": {
+                    "description": "ID unique task identifier",
+                    "type": "string"
+                },
+                "outputs": {
+                    "description": "Outputs list of output items (non-empty when completed)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.InteractionOutput"
+                    }
+                },
+                "query": {
+                    "description": "Query that was researched",
+                    "type": "string"
+                },
+                "sources": {
+                    "description": "Sources consulted during research",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ResearchSource"
+                    }
+                },
+                "status": {
+                    "description": "Status: \"in_progress\", \"completed\", \"failed\"",
+                    "type": "string"
+                },
+                "steps": {
+                    "description": "Steps research steps performed",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ResearchStep"
+                    }
+                }
+            }
+        },
         "dto.MessageRequest": {
             "type": "object",
             "properties": {
@@ -627,6 +950,52 @@ const docTemplate = `{
                     "$ref": "#/definitions/dto.InlineData"
                 },
                 "text": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ResearchSource": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "description": "Domain of the source",
+                    "type": "string"
+                },
+                "snippet": {
+                    "description": "Snippet relevant excerpt from the source",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title of the source page",
+                    "type": "string"
+                },
+                "url": {
+                    "description": "URL of the source",
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ResearchStep": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "description": "Description of what this step did",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "Query used in this step (for search steps)",
+                    "type": "string"
+                },
+                "result": {
+                    "description": "Result summary of this step",
+                    "type": "string"
+                },
+                "step_number": {
+                    "description": "StepNumber ordinal step number",
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "Type of step: \"search\", \"read\", \"synthesize\", \"outline\", \"write\"",
                     "type": "string"
                 }
             }

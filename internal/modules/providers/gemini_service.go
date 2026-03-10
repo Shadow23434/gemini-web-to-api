@@ -57,7 +57,7 @@ func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
 	}
 
 	client := req.NewClient().
-		SetTimeout(2 * time.Minute).
+		SetTimeout(10 * time.Minute).
 		SetCommonHeaders(DefaultHeaders)
 
 	refreshIntervalMinutes := cfg.Gemini.RefreshInterval

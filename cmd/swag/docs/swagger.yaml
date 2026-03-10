@@ -69,6 +69,61 @@ definitions:
       role:
         type: string
     type: object
+  dto.DeepResearchRequest:
+    properties:
+      language:
+        description: Language for the response (optional, e.g. "en", "vi")
+        type: string
+      max_sources:
+        description: MaxSources maximum number of web sources to consult (optional)
+        type: integer
+      model:
+        description: Model to use (optional, defaults to best available)
+        type: string
+      query:
+        description: Query is the research topic or question
+        type: string
+    type: object
+  dto.DeepResearchResponse:
+    properties:
+      completed_at:
+        description: CompletedAt timestamp (Unix seconds), 0 if not completed
+        type: integer
+      created_at:
+        description: CreatedAt timestamp (Unix seconds)
+        type: integer
+      duration_ms:
+        description: DurationMs total research duration in milliseconds
+        type: integer
+      error:
+        description: Error message if status is "failed"
+        type: string
+      id:
+        description: ID of this research session
+        type: string
+      model:
+        description: Model used
+        type: string
+      query:
+        description: Query that was researched
+        type: string
+      sources:
+        description: Sources used in research
+        items:
+          $ref: '#/definitions/dto.ResearchSource'
+        type: array
+      status:
+        description: 'Status: "in_progress", "completed", "failed"'
+        type: string
+      steps:
+        description: Steps of research performed
+        items:
+          $ref: '#/definitions/dto.ResearchStep'
+        type: array
+      summary:
+        description: Summary is the synthesized research report
+        type: string
+    type: object
   dto.GeminiGenerateRequest:
     properties:
       contents:
@@ -133,6 +188,74 @@ definitions:
       mimeType:
         type: string
     type: object
+  dto.InteractionCreateRequest:
+    properties:
+      agent:
+        description: Agent selects the research mode (e.g. "deep-research-pro-preview-12-2025")
+        type: string
+      background:
+        description: Background if true the task runs asynchronously (always true
+          for this endpoint)
+        type: boolean
+      input:
+        description: Input is the research query / topic
+        type: string
+      language:
+        description: Language for the output report
+        type: string
+      max_sources:
+        description: MaxSources max number of web sources to consult
+        type: integer
+      stream:
+        description: Stream if true the server returns an SSE stream of InteractionResponse
+          events
+        type: boolean
+    type: object
+  dto.InteractionOutput:
+    properties:
+      text:
+        description: Text is the research report text
+        type: string
+    type: object
+  dto.InteractionResponse:
+    properties:
+      completed_at:
+        description: CompletedAt Unix timestamp (0 if not yet completed)
+        type: integer
+      created_at:
+        description: CreatedAt Unix timestamp
+        type: integer
+      duration_ms:
+        description: DurationMs total research duration in milliseconds
+        type: integer
+      error:
+        description: Error message if status is "failed"
+        type: string
+      id:
+        description: ID unique task identifier
+        type: string
+      outputs:
+        description: Outputs list of output items (non-empty when completed)
+        items:
+          $ref: '#/definitions/dto.InteractionOutput'
+        type: array
+      query:
+        description: Query that was researched
+        type: string
+      sources:
+        description: Sources consulted during research
+        items:
+          $ref: '#/definitions/dto.ResearchSource'
+        type: array
+      status:
+        description: 'Status: "in_progress", "completed", "failed"'
+        type: string
+      steps:
+        description: Steps research steps performed
+        items:
+          $ref: '#/definitions/dto.ResearchStep'
+        type: array
+    type: object
   dto.MessageRequest:
     properties:
       max_tokens:
@@ -174,6 +297,39 @@ definitions:
       inlineData:
         $ref: '#/definitions/dto.InlineData'
       text:
+        type: string
+    type: object
+  dto.ResearchSource:
+    properties:
+      domain:
+        description: Domain of the source
+        type: string
+      snippet:
+        description: Snippet relevant excerpt from the source
+        type: string
+      title:
+        description: Title of the source page
+        type: string
+      url:
+        description: URL of the source
+        type: string
+    type: object
+  dto.ResearchStep:
+    properties:
+      description:
+        description: Description of what this step did
+        type: string
+      query:
+        description: Query used in this step (for search steps)
+        type: string
+      result:
+        description: Result summary of this step
+        type: string
+      step_number:
+        description: StepNumber ordinal step number
+        type: integer
+      type:
+        description: 'Type of step: "search", "read", "synthesize", "outline", "write"'
         type: string
     type: object
   dto.UsageMetadata:
@@ -332,6 +488,112 @@ paths:
       summary: Get Claude Model
       tags:
       - Claude
+  /gemini/v1beta/deepresearch:
+    post:
+      consumes:
+      - application/json
+      description: Performs deep research on a topic using Gemini, searching the web
+        and synthesizing a comprehensive report. This is a blocking call that returns
+        only when research is complete (may take several minutes).
+      parameters:
+      - description: Deep Research Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.DeepResearchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.DeepResearchResponse'
+        "400":
+          description: Bad Request – query is missing
+          schema:
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            type: object
+      summary: Deep Research (synchronous)
+      tags:
+      - Gemini
+  /gemini/v1beta/deepresearch/{id}:
+    get:
+      description: Returns the current status and result of a background research
+        task.
+      parameters:
+      - description: Task ID returned by create
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.InteractionResponse'
+        "404":
+          description: Not Found
+          schema:
+            type: object
+      summary: Get Deep Research Interaction status
+      tags:
+      - Gemini
+  /gemini/v1beta/deepresearch/create:
+    post:
+      consumes:
+      - application/json
+      description: Start a deep research task. Set stream=true for realtime SSE progress,
+        or omit for background polling.
+      parameters:
+      - description: Interaction Create Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.InteractionCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/dto.InteractionResponse'
+      summary: Create Deep Research Interaction
+      tags:
+      - Gemini
+  /gemini/v1beta/deepresearch/stream:
+    post:
+      consumes:
+      - application/json
+      description: Streams deep research progress in real-time using Server-Sent Events
+        (SSE).
+      parameters:
+      - description: Deep Research Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.DeepResearchRequest'
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream of DeepResearchStreamEvent JSON objects
+          schema:
+            type: string
+        "400":
+          description: Bad Request – query is missing
+          schema:
+            type: object
+      summary: Deep Research (streaming SSE)
+      tags:
+      - Gemini
   /gemini/v1beta/models:
     get:
       consumes:

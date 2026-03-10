@@ -110,6 +110,22 @@ func SendSSEChunk(w *bufio.Writer, log *zap.Logger, event string, chunk interfac
 	return nil
 }
 
+// SendSSEEvent writes a generic SSE data event by marshaling v as JSON.
+// It returns false if writing fails (to signal the caller to stop streaming).
+func SendSSEEvent(w *bufio.Writer, log *zap.Logger, v interface{}) bool {
+	data := MarshalJSONSafely(log, v)
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", string(data)); err != nil {
+		log.Error("Failed to write SSE event", zap.Error(err))
+		return false
+	}
+	if err := w.Flush(); err != nil {
+		log.Error("Failed to flush SSE event writer", zap.Error(err))
+		return false
+	}
+	return true
+}
+
+
 // SplitResponseIntoChunks simulates streaming by splitting response into chunks
 func SplitResponseIntoChunks(text string, delayMs int) []string {
 	words := strings.Split(text, " ")

@@ -76,3 +76,101 @@ func (s *GeminiService) IsHealthy() bool {
 func (s *GeminiService) Client() *providers.Client {
 	return s.client
 }
+
+// DeepResearch performs synchronous deep research
+func (s *GeminiService) DeepResearch(ctx context.Context, req dto.DeepResearchRequest) (*dto.DeepResearchResponse, error) {
+	opts := []providers.DeepResearchOption{}
+	if req.Model != "" {
+		opts = append(opts, providers.WithResearchModel(req.Model))
+	}
+	if req.Language != "" {
+		opts = append(opts, providers.WithResearchLanguage(req.Language))
+	}
+	if req.MaxSources > 0 {
+		opts = append(opts, providers.WithResearchMaxSources(req.MaxSources))
+	}
+
+	result, err := s.client.DeepResearch(ctx, req.Query, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return toDeepResearchResponse(result, "completed"), nil
+}
+
+// DeepResearchStream streams deep research events by calling cb for each event
+func (s *GeminiService) DeepResearchStream(ctx context.Context, req dto.DeepResearchRequest, cb func(dto.DeepResearchStreamEvent) bool) error {
+	opts := []providers.DeepResearchOption{}
+	if req.Model != "" {
+		opts = append(opts, providers.WithResearchModel(req.Model))
+	}
+	if req.Language != "" {
+		opts = append(opts, providers.WithResearchLanguage(req.Language))
+	}
+	if req.MaxSources > 0 {
+		opts = append(opts, providers.WithResearchMaxSources(req.MaxSources))
+	}
+
+	return s.client.DeepResearchStream(ctx, req.Query, func(ev providers.DeepResearchEvent) bool {
+		dtoEv := dto.DeepResearchStreamEvent{
+			Event:    string(ev.Event),
+			Message:  ev.Message,
+			Progress: ev.Progress,
+			Error:    ev.Error,
+		}
+		if ev.Step != nil {
+			dtoEv.Step = &dto.ResearchStep{
+				StepNumber:  ev.Step.StepNumber,
+				Type:        ev.Step.Type,
+				Description: ev.Step.Description,
+				Query:       ev.Step.Query,
+				Result:      ev.Step.Result,
+			}
+		}
+		if ev.Source != nil {
+			dtoEv.Source = &dto.ResearchSource{
+				Title:   ev.Source.Title,
+				URL:     ev.Source.URL,
+				Snippet: ev.Source.Snippet,
+				Domain:  ev.Source.Domain,
+			}
+		}
+		if ev.Result != nil {
+			resp := toDeepResearchResponse(ev.Result, "completed")
+			dtoEv.Result = resp
+		}
+		return cb(dtoEv)
+	}, opts...)
+}
+
+// toDeepResearchResponse converts a providers.DeepResearchResult into a DTO response
+func toDeepResearchResponse(r *providers.DeepResearchResult, status string) *dto.DeepResearchResponse {
+	resp := &dto.DeepResearchResponse{
+		ID:          r.ID,
+		Status:      status,
+		Query:       r.Query,
+		Summary:     r.Summary,
+		Model:       r.Model,
+		CreatedAt:   r.CreatedAt,
+		CompletedAt: r.CompletedAt,
+		DurationMs:  r.DurationMs,
+	}
+	for _, src := range r.Sources {
+		resp.Sources = append(resp.Sources, dto.ResearchSource{
+			Title:   src.Title,
+			URL:     src.URL,
+			Snippet: src.Snippet,
+			Domain:  src.Domain,
+		})
+	}
+	for _, step := range r.Steps {
+		resp.Steps = append(resp.Steps, dto.ResearchStep{
+			StepNumber:  step.StepNumber,
+			Type:        step.Type,
+			Description: step.Description,
+			Query:       step.Query,
+			Result:      step.Result,
+		})
+	}
+	return resp
+}
