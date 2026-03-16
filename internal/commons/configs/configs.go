@@ -76,20 +76,6 @@ func New() (*Config, error) {
 
 // Validate checks if the configuration has required values
 func (c *Config) Validate() error {
-	var missingVars []string
-
-	// Check Gemini configuration - at least one of these should be present
-	if c.Gemini.Secure1PSID == "" {
-		missingVars = append(missingVars, "GEMINI_1PSID")
-	}
-
-	if c.Gemini.Secure1PSID != "" {
-		// If PSID is present, we need at least one of these
-		if c.Gemini.Secure1PSIDTS == "" {
-			missingVars = append(missingVars, "GEMINI_1PSIDTS")
-		}
-	}
-
 	// Check Server port is valid
 	if c.Server.Port == "" {
 		c.Server.Port = defaultServerPort
@@ -99,10 +85,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid PORT value: %q (must be a number)", c.Server.Port)
 	}
 
-	if len(missingVars) > 0 {
-		return fmt.Errorf("missing required environment variables: %v. Please set them before running the application", missingVars)
-	}
-
+	// NOTE: Gemini cookies are optional to allow management auth flows
+	// and booting the server before credentials are provisioned.
 	return nil
 }
 

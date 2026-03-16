@@ -30,6 +30,7 @@ type Client struct {
 	mu         sync.RWMutex // protects: at, healthy
 	healthy    bool
 	log        *zap.Logger
+	userAgent  string
 
 	autoRefresh     bool
 	refreshInterval time.Duration
@@ -56,6 +57,8 @@ func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
 		UpdatedAt:     time.Now(),
 	}
 
+	defaultUserAgent := DefaultHeaders["User-Agent"]
+
 	client := req.NewClient().
 		SetTimeout(2 * time.Minute).
 		SetCommonHeaders(DefaultHeaders)
@@ -68,6 +71,7 @@ func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
 	return &Client{
 		httpClient:      client,
 		cookies:         cookies,
+		userAgent:       defaultUserAgent,
 		autoRefresh:     true,
 		refreshInterval: time.Duration(refreshIntervalMinutes) * time.Minute,
 		stopRefresh:     make(chan struct{}),
@@ -85,7 +89,7 @@ func (c *Client) Init(ctx context.Context) error {
 	// Check if we should use cached cookies or clear cache
 	if c.cookies.Secure1PSID != "" {
 		cachedTS, err := c.LoadCachedCookies()
-		
+
 		// If config has a new PSIDTS that differs from cache, clear cache and use config
 		if configPSIDTS != "" && cachedTS != "" && configPSIDTS != cachedTS {
 			_ = c.ClearCookieCache()
@@ -106,6 +110,8 @@ func (c *Client) Init(ctx context.Context) error {
 			c.log.Info("Successfully obtained __Secure-1PSIDTS via rotation")
 		}
 	}
+
+	c.applyUserAgent()
 
 	// Populate cookies
 	c.httpClient.SetCommonCookies(c.cookies.ToHTTPCookies()...)
@@ -142,9 +148,16 @@ func (c *Client) Init(ctx context.Context) error {
 
 func (c *Client) refreshSessionToken() error {
 	// 1. Initial hit to google.com to get extra cookies (NID, etc)
+	c.mu.RLock()
+	ua := c.userAgent
+	c.mu.RUnlock()
+	if ua == "" {
+		ua = DefaultHeaders["User-Agent"]
+	}
+	
 	tmpClient := req.NewClient().
 		SetTimeout(30 * time.Second).
-		SetUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		SetUserAgent(ua)
 	
 	resp1, err := tmpClient.R().Get("https://www.google.com/")
 	extraCookies := ""
@@ -178,7 +191,7 @@ func (c *Client) refreshSessionToken() error {
 		"Sec-Fetch-User":            "?1",
 		"Upgrade-Insecure-Requests": "1",
 		"X-Same-Domain":             "1",
-		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"User-Agent":                ua,
 	}
 
 	hClient := &http.Client{
@@ -410,7 +423,13 @@ func (c *Client) RotateCookies() error {
 	
 	req.Header.Set("Content-Type", "application/json")
 	// Google often blocks requests with default Go-http-client User-Agent
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	c.mu.RLock()
+	ua := c.userAgent
+	c.mu.RUnlock()
+	if ua == "" {
+		ua = DefaultHeaders["User-Agent"]
+	}
+	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Cookie", cookieStr)
 
 	c.log.Debug("Sending rotation request", zap.String("url", EndpointRotateCookies))
@@ -453,12 +472,57 @@ func (c *Client) RotateCookies() error {
 func (c *Client) GetCookies() *CookieStore {
 	c.cookies.mu.RLock()
 	defer c.cookies.mu.RUnlock()
-	
+
 	return &CookieStore{
 		Secure1PSID:   c.cookies.Secure1PSID,
 		Secure1PSIDTS: c.cookies.Secure1PSIDTS,
 		UpdatedAt:     c.cookies.UpdatedAt,
 	}
+}
+
+func (c *Client) UpdateCookies(psid, psidts string) {
+	c.cookies.mu.Lock()
+	c.cookies.Secure1PSID = cleanCookie(psid)
+	c.cookies.Secure1PSIDTS = cleanCookie(psidts)
+	c.cookies.UpdatedAt = time.Now()
+	c.cookies.mu.Unlock()
+
+	c.httpClient.SetCommonCookies(c.cookies.ToHTTPCookies()...)
+}
+
+func (c *Client) SetUserAgent(userAgent string) error {
+	ua := strings.TrimSpace(userAgent)
+	if ua == "" {
+		return errors.New("user agent is required")
+	}
+
+	c.mu.Lock()
+	c.userAgent = ua
+	c.mu.Unlock()
+
+	c.applyUserAgent()
+	return nil
+}
+
+func (c *Client) applyUserAgent() {
+	c.mu.RLock()
+	ua := c.userAgent
+	c.mu.RUnlock()
+
+	if ua == "" {
+		ua = DefaultHeaders["User-Agent"]
+	}
+
+	headers := map[string]string{}
+	for key, value := range DefaultHeaders {
+		if strings.EqualFold(key, "User-Agent") {
+			headers[key] = ua
+			continue
+		}
+		headers[key] = value
+	}
+
+	c.httpClient.SetCommonHeaders(headers)
 }
 
 func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...GenerateOption) (*Response, error) {
@@ -554,6 +618,12 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 			lastErr = err
 			continue
 		}
+
+		c.log.Debug("GenerateContent response meta",
+			zap.Int("status", resp.StatusCode),
+			zap.String("content_type", resp.Header.Get("Content-Type")),
+			zap.Int("attempt", attempt),
+		)
 
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
@@ -667,66 +737,25 @@ func (c *Client) ListModelsIDs() []string {
 // parseResponse parses Gemini's response format
 func (c *Client) parseResponse(text string) (*Response, error) {
 	lines := strings.Split(text, "\n")
+	loggedFirstLine := false
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
+		if !loggedFirstLine {
+			c.log.Debug("ParseResponse first non-empty line",
+				zap.Int("line_len", len(line)),
+				zap.String("line_sample", truncateString(line, 200)),
+			)
+			loggedFirstLine = true
+		}
 		line = strings.TrimPrefix(line, ")]}'")
 
-		var root []interface{}
+		var root interface{}
 		if err := json.Unmarshal([]byte(line), &root); err == nil {
-			for _, item := range root {
-				itemArray, ok := item.([]interface{})
-				if !ok || len(itemArray) < 3 {
-					continue
-				}
-
-				payloadStr, ok := itemArray[2].(string)
-				if !ok {
-					continue
-				}
-
-				var payload []interface{}
-				if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
-					continue
-				}
-
-				if len(payload) > 4 {
-					candidates, ok := payload[4].([]interface{})
-					if ok && candidates != nil && len(candidates) > 0 {
-						firstCandidate, ok := candidates[0].([]interface{})
-						if ok && len(firstCandidate) >= 2 {
-							contentParts, ok := firstCandidate[1].([]interface{})
-							if ok && len(contentParts) > 0 {
-								resText, ok := contentParts[0].(string)
-								if ok {
-									// Extract conversation metadata if available
-									var cid, rid, rcid string
-									if len(firstCandidate) > 0 {
-										if id, ok := firstCandidate[0].(string); ok {
-											rcid = id
-										}
-									}
-									if len(payload) > 1 {
-										if id, ok := payload[1].(string); ok {
-											cid = id
-										}
-									}
-
-									return &Response{
-										Text: resText,
-										Metadata: map[string]any{
-											"cid":  cid,
-											"rid":  rid,
-											"rcid": rcid,
-										},
-									}, nil
-								}
-							}
-						}
-					}
-				}
+			if res, ok := c.parseFromValue(root); ok {
+				return res, nil
 			}
 		}
 	}
@@ -736,6 +765,116 @@ func (c *Client) parseResponse(text string) (*Response, error) {
 		sample = sample[:500]
 	}
 	return nil, fmt.Errorf("failed to parse response. Sample: %s", sample)
+}
+
+func (c *Client) parseFromValue(v interface{}) (*Response, bool) {
+	switch val := v.(type) {
+	case []interface{}:
+		if res, ok := c.parseFromPayload(val); ok {
+			return res, true
+		}
+		for _, item := range val {
+			if res, ok := c.parseFromValue(item); ok {
+				return res, true
+			}
+		}
+	case map[string]interface{}:
+		for _, item := range val {
+			if res, ok := c.parseFromValue(item); ok {
+				return res, true
+			}
+		}
+	case string:
+		candidate := strings.TrimSpace(val)
+		if looksLikeJSON(candidate) {
+			var nested interface{}
+			if err := json.Unmarshal([]byte(candidate), &nested); err == nil {
+				if res, ok := c.parseFromValue(nested); ok {
+					return res, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func (c *Client) parseFromPayload(payload []interface{}) (*Response, bool) {
+	if len(payload) > 4 {
+		candidates, ok := payload[4].([]interface{})
+		if ok && candidates != nil && len(candidates) > 0 {
+			firstCandidate, ok := candidates[0].([]interface{})
+			if ok && len(firstCandidate) >= 2 {
+				contentParts, ok := firstCandidate[1].([]interface{})
+				if ok && len(contentParts) > 0 {
+					resText, ok := contentParts[0].(string)
+					if ok {
+						// Extract conversation metadata if available
+						var cid, rid, rcid string
+						if len(firstCandidate) > 0 {
+							if id, ok := firstCandidate[0].(string); ok {
+								rcid = id
+							}
+						}
+						if len(payload) > 1 {
+							if id, ok := payload[1].(string); ok {
+								cid = id
+							}
+						}
+
+						return &Response{
+							Text: resText,
+							Metadata: map[string]any{
+								"cid":  cid,
+								"rid":  rid,
+								"rcid": rcid,
+							},
+						}, true
+					}
+				}
+			}
+		}
+	}
+
+	if text, ok := findCandidateText(payload); ok {
+		return &Response{
+			Text:     text,
+			Metadata: map[string]any{},
+		}, true
+	}
+	return nil, false
+}
+
+func findCandidateText(v interface{}) (string, bool) {
+	switch val := v.(type) {
+	case []interface{}:
+		if len(val) >= 2 {
+			if parts, ok := val[1].([]interface{}); ok && len(parts) > 0 {
+				if text, ok := parts[0].(string); ok && text != "" {
+					return text, true
+				}
+			}
+		}
+		for _, item := range val {
+			if text, ok := findCandidateText(item); ok {
+				return text, true
+			}
+		}
+	case map[string]interface{}:
+		for _, item := range val {
+			if text, ok := findCandidateText(item); ok {
+				return text, true
+			}
+		}
+	}
+	return "", false
+}
+
+func looksLikeJSON(s string) bool {
+	if s == "" {
+		return false
+	}
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "[") || strings.HasPrefix(s, "{")
 }
 
 func (cs *CookieStore) ToHTTPCookies() []*http.Cookie {
@@ -839,12 +978,22 @@ func (c *Client) ClearCookieCache() error {
 	return nil
 }
 
+func truncateString(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
+}
+
 const (
-EndpointGoogle        = "https://www.google.com"
-EndpointInit          = "https://gemini.google.com/app"
-EndpointGenerate      = "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
-EndpointRotateCookies = "https://accounts.google.com/RotateCookies"
-EndpointBatchExec     = "https://gemini.google.com/_/BardChatUi/data/batchexecute"
+	EndpointGoogle        = "https://www.google.com"
+	EndpointInit          = "https://gemini.google.com/app"
+	EndpointGenerate      = "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
+	EndpointRotateCookies = "https://accounts.google.com/RotateCookies"
+	EndpointBatchExec     = "https://gemini.google.com/_/BardChatUi/data/batchexecute"
 )
 
 var DefaultHeaders = map[string]string{
