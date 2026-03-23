@@ -25,12 +25,13 @@ import (
 )
 
 type Client struct {
-	httpClient *req.Client
-	cookies    *CookieStore
-	at         string
-	mu         sync.RWMutex // protects: at, healthy
-	healthy    bool
-	log        *zap.Logger
+	httpClient   *req.Client
+	cookies      *CookieStore
+	at           string
+	mu           sync.RWMutex // protects: at, healthy, accountEmail, cachedModels
+	healthy      bool
+	accountEmail string
+	log          *zap.Logger
 
 	autoRefresh     bool
 	refreshInterval time.Duration
@@ -257,6 +258,7 @@ func (c *Client) refreshSessionToken() error {
 
 	bodyBytes, _ := io.ReadAll(bodyReader)
 	body := string(bodyBytes)
+	accountEmail := extractGoogleAccountEmail(body)
 
 	re := regexp.MustCompile(`"SNlM0e":"([^"]+)"`)
 	matches := re.FindStringSubmatch(body)
@@ -279,12 +281,36 @@ func (c *Client) refreshSessionToken() error {
 	c.mu.Lock()
 	c.at = matches[1]
 	c.healthy = true
+	c.accountEmail = accountEmail
 	c.mu.Unlock()
+
+	if accountEmail != "" {
+		c.log.Info("Authenticated Gemini account", zap.String("gmail_account", accountEmail))
+	}
 
 	// Update dynamic models from the same initialization body
 	c.refreshModels(body)
 
 	return nil
+}
+
+func extractGoogleAccountEmail(body string) string {
+	emailRegexes := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)email&quot;:\s*&quot;([^&]+@gmail\.com)&quot;`),
+		regexp.MustCompile(`(?i)"email"\s*:\s*"([^"\\s]+@gmail\.com)"`),
+		regexp.MustCompile(`(?i)"identifier"\s*:\s*"([^"\\s]+@gmail\.com)"`),
+		regexp.MustCompile(`(?i)([a-zA-Z0-9._%+\-]+@gmail\.com)`),
+	}
+
+	for _, re := range emailRegexes {
+		matches := re.FindStringSubmatch(body)
+		if len(matches) < 2 {
+			continue
+		}
+		return strings.TrimSpace(strings.Trim(matches[1], `"'`))
+	}
+
+	return ""
 }
 
 func (c *Client) refreshModels(body string) {
