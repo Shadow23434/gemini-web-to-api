@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"gemini-web-to-api/internal/commons/models"
@@ -35,17 +36,13 @@ func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCo
 		commonMessages = append(commonMessages, m.ToCommonMessage())
 	}
 
-	// Logic: Validate messages
 	if err := utils.ValidateMessages(commonMessages); err != nil {
 		return nil, err
 	}
-
-	// Logic: Validate generation parameters
 	if err := utils.ValidateGenerationRequest(req.Model, req.MaxTokens, req.Temperature); err != nil {
 		return nil, err
 	}
 
-	// Logic: Build Prompt
 	prompt := utils.BuildPromptFromMessages(commonMessages, "")
 	if prompt == "" {
 		return nil, fmt.Errorf("no valid content in messages")
@@ -56,32 +53,73 @@ func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCo
 		opts = append(opts, providers.WithModel(req.Model))
 	}
 
-	// Logic: Call Provider
 	response, err := s.client.GenerateContent(ctx, prompt, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	// Logic: Construct Response
 	return &dto.ChatCompletionResponse{
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   req.Model,
-		Choices: []dto.Choice{
-			{
-				Index: 0,
-				Message: models.Message{
-					Role:    "assistant",
-					Content: response.Text,
-				},
-				FinishReason: "stop",
+		Choices: []dto.Choice{{
+			Index: 0,
+			Message: models.Message{
+				Role:    "assistant",
+				Content: response.Text,
 			},
-		},
+			FinishReason: "stop",
+		}},
 		Usage: models.Usage{
 			PromptTokens:     0,
 			CompletionTokens: 0,
 			TotalTokens:      0,
 		},
+	}, nil
+}
+
+func (s *OpenAIService) CreateImageGeneration(ctx context.Context, req dto.ImageGenerationRequest) (*dto.ImageGenerationResponse, error) {
+	if strings.TrimSpace(req.Prompt) == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+	if req.N < 0 {
+		return nil, fmt.Errorf("n must be non-negative")
+	}
+
+	opts := []providers.GenerateOption{}
+	if req.Model != "" {
+		opts = append(opts, providers.WithModel(req.Model))
+	}
+	if req.N > 0 {
+		opts = append(opts, providers.WithImageCount(req.N))
+	}
+	if req.Size != "" {
+		opts = append(opts, providers.WithImageSize(req.Size))
+	}
+	if req.ResponseFormat != "" {
+		opts = append(opts, providers.WithResponseFormat(req.ResponseFormat))
+	}
+
+	response, err := s.client.GenerateImages(ctx, req.Prompt, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	data := make([]dto.ImageData, 0, len(response.Images))
+	for _, image := range response.Images {
+		data = append(data, dto.ImageData{
+			URL:     image.URL,
+			B64JSON: image.B64JSON,
+		})
+	}
+
+	if len(data) == 0 {
+		return nil, fmt.Errorf("image generation returned no images")
+	}
+
+	return &dto.ImageGenerationResponse{
+		Created: time.Now().Unix(),
+		Data:    data,
 	}, nil
 }

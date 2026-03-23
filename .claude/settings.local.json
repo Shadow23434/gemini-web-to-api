@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:pypi.org)",
+      "Bash(gh repo:*)",
+      "Bash(gh issue:*)",
+      "Bash(gofmt:*)",
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(swag init:*)",
+      "mcp__ide__getDiagnostics"
+    ]
+  }
+}

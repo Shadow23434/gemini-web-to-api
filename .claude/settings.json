@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:gist.github.com)",
+      "Bash(go run:*)",
+      "Bash(curl -sS -X POST \"http://localhost:4981/gemini/v1beta/models/gemini-3-pro-image-preview-11-2025:generateImages\" -H \"Content-Type: application/json\" --data '{\"\"prompt\"\":\"\"A cute cat on the moon\"\"}')",
+      "Bash(curl -sS \"http://localhost:4981/gemini/v1beta/models\")",
+      "Bash(curl -sS -X POST \"http://localhost:4981/gemini/v1beta/models/gemini-3-pro-image-preview-11-2025:generateContent\" -H \"Content-Type: application/json\" --data '{\"\"contents\"\":[{\"\"parts\"\":[{\"\"text\"\":\"\"hello\"\"}]}]}')",
+      "Bash(curl -sS -X POST \"http://localhost:4981/gemini/v1beta/models/gemini-3-pro-image-preview-11-2025:generateContent\" -H \"Content-Type: application/json\" --data '{\"\"contents\"\":[{\"\"parts\"\":[{\"\"text\"\":\"\"A cute cat on the moon\"\"}]}]}')",
+      "Bash(curl -sS -X POST \"http://localhost:4981/gemini/v1beta/models/gemini-2.5-flash-image-preview:generateImages\" -H \"Content-Type: application/json\" --data '{\"\"prompt\"\":\"\"A cute cat on the moon\"\"}')"
+    ]
+  }
+}

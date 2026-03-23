@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,7 +86,7 @@ func (c *Client) Init(ctx context.Context) error {
 	// Check if we should use cached cookies or clear cache
 	if c.cookies.Secure1PSID != "" {
 		cachedTS, err := c.LoadCachedCookies()
-		
+
 		// If config has a new PSIDTS that differs from cache, clear cache and use config
 		if configPSIDTS != "" && cachedTS != "" && configPSIDTS != cachedTS {
 			_ = c.ClearCookieCache()
@@ -145,7 +146,7 @@ func (c *Client) refreshSessionToken() error {
 	tmpClient := req.NewClient().
 		SetTimeout(30 * time.Second).
 		SetUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	
+
 	resp1, err := tmpClient.R().Get("https://www.google.com/")
 	extraCookies := ""
 	if err == nil {
@@ -161,7 +162,7 @@ func (c *Client) refreshSessionToken() error {
 	}
 
 	// 2. Prepare full cookie string
-	cookieStr := fmt.Sprintf("%s__Secure-1PSID=%s; __Secure-1PSIDTS=%s", 
+	cookieStr := fmt.Sprintf("%s__Secure-1PSID=%s; __Secure-1PSIDTS=%s",
 		extraCookies, c.cookies.Secure1PSID, c.cookies.Secure1PSIDTS)
 
 	commonHeaders := map[string]string{
@@ -244,7 +245,7 @@ func (c *Client) refreshSessionToken() error {
 	// Dump for debugging if it fails
 	// reqDump, _ := httputil.DumpRequestOut(req2, false)
 	// respDump, _ := httputil.DumpResponse(resp, false)
-	
+
 	var bodyReader io.ReadCloser = resp.Body
 	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
 		gz, err := gzip.NewReader(resp.Body)
@@ -257,14 +258,12 @@ func (c *Client) refreshSessionToken() error {
 	bodyBytes, _ := io.ReadAll(bodyReader)
 	body := string(bodyBytes)
 
-
 	re := regexp.MustCompile(`"SNlM0e":"([^"]+)"`)
 	matches := re.FindStringSubmatch(body)
 	if len(matches) < 2 {
 		reFallback := regexp.MustCompile(`\["SNlM0e","([^"]+)"\]`)
 		matches = reFallback.FindStringSubmatch(body)
 		if len(matches) < 2 {
-
 
 			errMsg := "authentication failed: SNlM0e not found"
 			if strings.Contains(body, "Sign in") || strings.Contains(body, "login") {
@@ -297,28 +296,23 @@ func (c *Client) refreshModels(body string) {
 	// We look for gemini- followed by alphanumeric characters, dots, or dashes.
 	modelIDRegex := regexp.MustCompile(`gemini-[a-zA-Z0-9.-]+`)
 	matches := modelIDRegex.FindAllString(body, -1)
-	
+
 	uniqueIDs := make(map[string]bool)
 	for _, id := range matches {
 		// Clean up potential trailing backslashes or quotes if they were caught
 		id = strings.Trim(id, `\"' `)
-		
+
 		// Basic validation: ensure it doesn't look like a generic string or partial ID
 		if !uniqueIDs[id] && len(id) > 10 {
 			uniqueIDs[id] = true
-			newModels = append(newModels, ModelInfo{
-				ID:       id,
-				Created:  now,
-				OwnedBy:  "google",
-				Provider: "gemini",
-			})
+			newModels = append(newModels, inferModelInfo(id, now))
 		}
 	}
 
 	c.mu.Lock()
 	c.cachedModels = newModels
 	c.mu.Unlock()
-	
+
 	if len(newModels) == 0 {
 		c.log.Warn("⚠️ No models found in Gemini Web response. Please check your cookies or connection.")
 	} else {
@@ -407,7 +401,7 @@ func (c *Client) RotateCookies() error {
 	// Payload must be exactly this string
 	strBody := `[000,"-0000000000000000000"]`
 	req, _ := http.NewRequest("POST", EndpointRotateCookies, strings.NewReader(strBody))
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	// Google often blocks requests with default Go-http-client User-Agent
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -453,7 +447,7 @@ func (c *Client) RotateCookies() error {
 func (c *Client) GetCookies() *CookieStore {
 	c.cookies.mu.RLock()
 	defer c.cookies.mu.RUnlock()
-	
+
 	return &CookieStore{
 		Secure1PSID:   c.cookies.Secure1PSID,
 		Secure1PSIDTS: c.cookies.Secure1PSIDTS,
@@ -462,23 +456,57 @@ func (c *Client) GetCookies() *CookieStore {
 }
 
 func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...GenerateOption) (*Response, error) {
+	config, at, modelInfo, err := c.prepareGenerateConfig(options...)
+	if err != nil {
+		return nil, err
+	}
+	if !modelInfo.SupportsTextGeneration {
+		return nil, fmt.Errorf("model '%s' does not support text generation", config.Model)
+	}
+
+	payload, err := buildTextGeneratePayload(prompt, config.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.executeGenerationRequest(ctx, at, payload, c.parseResponse, "GenerateContent")
+}
+
+func (c *Client) GenerateImages(ctx context.Context, prompt string, options ...GenerateOption) (*Response, error) {
+	config, at, modelInfo, err := c.prepareGenerateConfig(options...)
+	if err != nil {
+		return nil, err
+	}
+	if !modelInfo.SupportsImageGeneration {
+		return nil, fmt.Errorf("model '%s' does not support image generation", config.Model)
+	}
+
+	payload, err := buildImageGeneratePayload(prompt, config)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.executeGenerationRequest(ctx, at, payload, c.parseImageResponse, "GenerateImages")
+}
+
+func (c *Client) prepareGenerateConfig(options ...GenerateOption) (*GenerateConfig, string, ModelInfo, error) {
 	config := &GenerateConfig{}
 	for _, opt := range options {
 		opt(config)
 	}
 
-	// Default to first available model if not set or "gemini-pro"
 	c.mu.RLock()
 	if config.Model == "" || config.Model == "gemini-pro" {
 		if len(c.cachedModels) > 0 {
 			config.Model = c.cachedModels[0].ID
 		}
 	}
-	
-	// Strictly enforce that we only use models found/confirmed from the web
+
+	var modelInfo ModelInfo
 	found := false
 	for _, m := range c.cachedModels {
 		if m.ID == config.Model {
+			modelInfo = m
 			found = true
 			break
 		}
@@ -487,30 +515,49 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 	c.mu.RUnlock()
 
 	if !found && config.Model != "" {
-		return nil, fmt.Errorf("model '%s' is not supported or not available. Available models: %v", config.Model, c.ListModelsIDs())
+		return nil, "", ModelInfo{}, fmt.Errorf("model '%s' is not supported or not available. Available models: %v", config.Model, c.ListModelsIDs())
 	}
-
 	if at == "" {
-		return nil, errors.New("client not initialized")
+		return nil, "", ModelInfo{}, errors.New("client not initialized")
 	}
 
-	// Build request payload
-	// The structure confirmed to work for model selection is [ [prompt], nil, nil, model ]
+	return config, at, modelInfo, nil
+}
+
+func buildTextGeneratePayload(prompt, model string) (map[string]string, error) {
 	inner := []interface{}{
 		[]interface{}{prompt},
 		nil,
 		nil,
-		config.Model,
+		model,
 	}
 
-	innerJSON, _ := json.Marshal(inner)
+	return buildGenerationFormData(inner)
+}
+
+func buildImageGeneratePayload(prompt string, config *GenerateConfig) (map[string]string, error) {
+	return buildTextGeneratePayload(prompt, config.Model)
+}
+
+func buildGenerationFormData(inner []interface{}) (map[string]string, error) {
+	innerJSON, err := json.Marshal(inner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal inner payload: %w", err)
+	}
+
 	outer := []interface{}{nil, string(innerJSON)}
-	outerJSON, _ := json.Marshal(outer)
-
-	formData := map[string]string{
-		"at":    at,
-		"f.req": string(outerJSON),
+	outerJSON, err := json.Marshal(outer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal outer payload: %w", err)
 	}
+
+	return map[string]string{
+		"f.req": string(outerJSON),
+	}, nil
+}
+
+func (c *Client) executeGenerationRequest(ctx context.Context, at string, formData map[string]string, parser func(string) (*Response, error), operation string) (*Response, error) {
+	formData["at"] = at
 
 	maxAttempts := c.maxRetries
 	if maxAttempts <= 0 {
@@ -518,13 +565,13 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 	}
 
 	totalStart := time.Now()
-
 	var lastErr error
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			// Exponential backoff: 1s, 2s, 4s...
 			backoff := time.Duration(1<<uint(attempt-2)) * time.Second
-			c.log.Warn("Retrying GenerateContent",
+			c.log.Warn("Retrying generation request",
+				zap.String("operation", operation),
 				zap.Int("attempt", attempt),
 				zap.Int("max_attempts", maxAttempts),
 				zap.Duration("backoff", backoff),
@@ -547,6 +594,7 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 		httpDuration := time.Since(httpStart)
 		if err != nil {
 			c.log.Warn("Generate request failed, will retry",
+				zap.String("operation", operation),
 				zap.Error(err),
 				zap.Duration("http_duration", httpDuration),
 				zap.Int("attempt", attempt),
@@ -556,10 +604,22 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			body := resp.String()
+			sample := body
+			if len(sample) > 1000 {
+				sample = sample[:1000]
+			}
+			c.log.Warn("Generation request returned non-200",
+				zap.String("operation", operation),
+				zap.Int("status", resp.StatusCode),
+				zap.Int("attempt", attempt),
+				zap.Int("response_bytes", len(body)),
+				zap.String("response_sample", sample),
+			)
 			lastErr = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
-			// Only retry on 5xx (server errors), not 4xx (client errors)
 			if resp.StatusCode >= 500 {
 				c.log.Warn("Server error, will retry",
+					zap.String("operation", operation),
 					zap.Int("status", resp.StatusCode),
 					zap.Int("attempt", attempt),
 				)
@@ -568,34 +628,40 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 			return nil, lastErr
 		}
 
+		body := resp.String()
 		parseStart := time.Now()
-		result, parseErr := c.parseResponse(resp.String())
+		result, parseErr := parser(body)
 		parseDuration := time.Since(parseStart)
-
 		if parseErr != nil {
 			lastErr = parseErr
 			c.log.Warn("Failed to parse response, will retry",
+				zap.String("operation", operation),
 				zap.Error(parseErr),
 				zap.Int("attempt", attempt),
 			)
 			continue
 		}
 
-		c.log.Debug("GenerateContent timing",
+		c.log.Debug("Generation request timing",
+			zap.String("operation", operation),
 			zap.Duration("gemini_server_rtt", httpDuration),
 			zap.Duration("parse_duration", parseDuration),
 			zap.Duration("total_duration", time.Since(totalStart)),
 			zap.Int("attempt", attempt),
-			zap.Int("response_bytes", len(resp.String())),
+			zap.Int("response_bytes", len(body)),
 		)
 
 		if attempt > 1 {
-			c.log.Info("GenerateContent succeeded after retry", zap.Int("attempt", attempt))
+			c.log.Info("Generation request succeeded after retry",
+				zap.String("operation", operation),
+				zap.Int("attempt", attempt),
+			)
 		}
 		return result, nil
 	}
 
-	c.log.Error("GenerateContent failed after all attempts",
+	c.log.Error("Generation request failed after all attempts",
+		zap.String("operation", operation),
 		zap.Int("attempts", maxAttempts),
 		zap.Error(lastErr),
 	)
@@ -645,23 +711,36 @@ func (c *Client) IsHealthy() bool {
 func (c *Client) ListModels() []ModelInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	if len(c.cachedModels) == 0 {
 		return []ModelInfo{}
 	}
-	
+
 	return c.cachedModels
 }
 
 func (c *Client) ListModelsIDs() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	ids := make([]string, 0, len(c.cachedModels))
 	for _, m := range c.cachedModels {
 		ids = append(ids, m.ID)
 	}
 	return ids
+}
+
+func (c *Client) GetModelInfo(modelID string) (ModelInfo, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for _, m := range c.cachedModels {
+		if m.ID == modelID {
+			return m, true
+		}
+	}
+
+	return ModelInfo{}, false
 }
 
 // parseResponse parses Gemini's response format
@@ -675,58 +754,28 @@ func (c *Client) parseResponse(text string) (*Response, error) {
 		line = strings.TrimPrefix(line, ")]}'")
 
 		var root []interface{}
-		if err := json.Unmarshal([]byte(line), &root); err == nil {
-			for _, item := range root {
-				itemArray, ok := item.([]interface{})
-				if !ok || len(itemArray) < 3 {
-					continue
-				}
+		if err := json.Unmarshal([]byte(line), &root); err != nil {
+			continue
+		}
 
-				payloadStr, ok := itemArray[2].(string)
-				if !ok {
-					continue
-				}
+		for _, item := range root {
+			itemArray, ok := item.([]interface{})
+			if !ok || len(itemArray) < 3 {
+				continue
+			}
 
-				var payload []interface{}
-				if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
-					continue
-				}
+			payloadStr, ok := itemArray[2].(string)
+			if !ok {
+				continue
+			}
 
-				if len(payload) > 4 {
-					candidates, ok := payload[4].([]interface{})
-					if ok && candidates != nil && len(candidates) > 0 {
-						firstCandidate, ok := candidates[0].([]interface{})
-						if ok && len(firstCandidate) >= 2 {
-							contentParts, ok := firstCandidate[1].([]interface{})
-							if ok && len(contentParts) > 0 {
-								resText, ok := contentParts[0].(string)
-								if ok {
-									// Extract conversation metadata if available
-									var cid, rid, rcid string
-									if len(firstCandidate) > 0 {
-										if id, ok := firstCandidate[0].(string); ok {
-											rcid = id
-										}
-									}
-									if len(payload) > 1 {
-										if id, ok := payload[1].(string); ok {
-											cid = id
-										}
-									}
+			payload, err := parsePayloadString(payloadStr)
+			if err != nil {
+				continue
+			}
 
-									return &Response{
-										Text: resText,
-										Metadata: map[string]any{
-											"cid":  cid,
-											"rid":  rid,
-											"rcid": rcid,
-										},
-									}, nil
-								}
-							}
-						}
-					}
-				}
+			if response, ok := parseTextResponsePayload(payload); ok {
+				return response, nil
 			}
 		}
 	}
@@ -736,6 +785,503 @@ func (c *Client) parseResponse(text string) (*Response, error) {
 		sample = sample[:500]
 	}
 	return nil, fmt.Errorf("failed to parse response. Sample: %s", sample)
+}
+
+func (c *Client) parseImageResponse(text string) (*Response, error) {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = strings.TrimPrefix(line, ")]}'")
+
+		var root []interface{}
+		if err := json.Unmarshal([]byte(line), &root); err != nil {
+			continue
+		}
+
+		for _, item := range root {
+			itemArray, ok := item.([]interface{})
+			if !ok || len(itemArray) < 3 {
+				continue
+			}
+
+			payloadStr, ok := itemArray[2].(string)
+			if !ok {
+				continue
+			}
+
+			payload, err := parsePayloadString(payloadStr)
+			if err != nil {
+				continue
+			}
+
+			if response, ok := parseImageResponsePayload(payload); ok {
+				return response, nil
+			}
+		}
+	}
+
+	if c.log != nil {
+		snippet := text
+		if len(snippet) > 20000 {
+			snippet = snippet[:20000]
+		}
+		lower := strings.ToLower(text)
+		c.log.Debug("Failed to parse image response payload",
+			zap.Int("response_bytes", len(text)),
+			zap.Bool("contains_googleusercontent", strings.Contains(lower, "googleusercontent")),
+			zap.Bool("contains_data_uri", strings.Contains(lower, "data:image/")),
+			zap.String("response_snippet", snippet),
+		)
+	}
+
+	sample := text
+	if len(sample) > 500 {
+		sample = sample[:500]
+	}
+	return nil, fmt.Errorf("failed to parse image response. Sample: %s", sample)
+}
+
+func parsePayloadString(payloadStr string) ([]interface{}, error) {
+	var payloadAny interface{}
+	if err := json.Unmarshal([]byte(payloadStr), &payloadAny); err != nil {
+		return nil, err
+	}
+	return normalizePayloadValue(payloadAny)
+}
+
+func normalizePayloadValue(payloadAny interface{}) ([]interface{}, error) {
+	switch typed := payloadAny.(type) {
+	case []interface{}:
+		return typed, nil
+	case map[string]interface{}:
+		return []interface{}{typed}, nil
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return nil, fmt.Errorf("empty payload string")
+		}
+		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+			var nestedAny interface{}
+			if err := json.Unmarshal([]byte(trimmed), &nestedAny); err == nil {
+				return normalizePayloadValue(nestedAny)
+			}
+		}
+		return []interface{}{trimmed}, nil
+	default:
+		return []interface{}{payloadAny}, nil
+	}
+}
+
+func parseTextResponsePayload(payload []interface{}) (*Response, bool) {
+	if len(payload) <= 4 {
+		return nil, false
+	}
+
+	candidates, ok := payload[4].([]interface{})
+	if !ok || len(candidates) == 0 {
+		return nil, false
+	}
+
+	firstCandidate, ok := candidates[0].([]interface{})
+	if !ok || len(firstCandidate) < 2 {
+		return nil, false
+	}
+
+	contentParts, ok := firstCandidate[1].([]interface{})
+	if !ok || len(contentParts) == 0 {
+		return nil, false
+	}
+
+	resText, ok := contentParts[0].(string)
+	if !ok {
+		return nil, false
+	}
+
+	var cid, rid, rcid string
+	if len(firstCandidate) > 0 {
+		if id, ok := firstCandidate[0].(string); ok {
+			rcid = id
+		}
+	}
+	if len(payload) > 1 {
+		if id, ok := payload[1].(string); ok {
+			cid = id
+		}
+	}
+
+	return &Response{
+		Text: resText,
+		Metadata: map[string]any{
+			"cid":  cid,
+			"rid":  rid,
+			"rcid": rcid,
+		},
+	}, true
+}
+
+func parseImageResponsePayload(payload []interface{}) (*Response, bool) {
+	images := extractImagesFromValue(payload)
+	if len(images) == 0 {
+		images = extractImagesFromGeminiPayload(payload)
+	}
+	if len(images) == 0 {
+		images = extractImagesFromJSONStringNodes(payload)
+	}
+	if len(images) == 0 {
+		return nil, false
+	}
+
+	response := &Response{Images: images}
+	if text, ok := extractFirstString(payload, map[string]bool{}); ok {
+		response.Text = text
+	}
+	return response, true
+}
+
+func extractImagesFromJSONStringNodes(payload []interface{}) []Image {
+	seen := map[string]bool{}
+	images := make([]Image, 0)
+
+	walkValue(payload, func(node interface{}) {
+		str, ok := node.(string)
+		if !ok {
+			return
+		}
+		trimmed := strings.TrimSpace(str)
+		if trimmed == "" {
+			return
+		}
+		if !(strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) {
+			return
+		}
+
+		var nestedAny interface{}
+		if err := json.Unmarshal([]byte(trimmed), &nestedAny); err != nil {
+			return
+		}
+		nestedImages := extractImagesFromValue(nestedAny)
+		if len(nestedImages) == 0 {
+			nestedImages = extractImagesFromGeminiValue(nestedAny)
+		}
+		for _, img := range nestedImages {
+			key := img.URL + "|" + img.B64JSON
+			if !seen[key] {
+				seen[key] = true
+				images = append(images, img)
+			}
+		}
+	})
+
+	return images
+}
+
+func extractImagesFromValue(value interface{}) []Image {
+	seen := map[string]bool{}
+	var images []Image
+	walkValue(value, func(node interface{}) {
+		switch typed := node.(type) {
+		case string:
+			if image := imageFromString(typed); image != nil {
+				key := image.URL + "|" + image.B64JSON
+				if !seen[key] {
+					seen[key] = true
+					images = append(images, *image)
+				}
+			}
+		case map[string]interface{}:
+			if image := imageFromMap(typed); image != nil {
+				key := image.URL + "|" + image.B64JSON
+				if !seen[key] {
+					seen[key] = true
+					images = append(images, *image)
+				}
+			}
+		}
+	})
+	return images
+}
+
+func extractImagesFromGeminiPayload(payload []interface{}) []Image {
+	if len(payload) <= 4 {
+		return extractImagesFromGeminiValue(payload)
+	}
+
+	candidates, ok := payload[4].([]interface{})
+	if !ok || len(candidates) == 0 {
+		return extractImagesFromGeminiValue(payload)
+	}
+
+	seen := map[string]bool{}
+	images := make([]Image, 0)
+	for _, candidateRaw := range candidates {
+		candidate, ok := candidateRaw.([]interface{})
+		if !ok || len(candidate) <= 12 {
+			continue
+		}
+
+		candidate12 := candidate[12]
+		candidateMap, ok := candidate12.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		raw7, ok := candidateMap["7"]
+		if !ok {
+			continue
+		}
+		arr7, ok := raw7.([]interface{})
+		if !ok || len(arr7) <= 0 {
+			continue
+		}
+
+		raw0, ok := arr7[0].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, imageRaw := range raw0 {
+			imageArr, ok := imageRaw.([]interface{})
+			if !ok || len(imageArr) <= 3 {
+				continue
+			}
+
+			url, _ := extractNestedString(imageArr, 0, 3, 3)
+			if url == "" {
+				continue
+			}
+
+			img := Image{URL: url}
+			if titleIndex, ok := extractNestedFloat(imageArr, 3, 6); ok {
+				img.Title = "[GeneratedImage " + strconv.Itoa(int(titleIndex)) + "]"
+			}
+
+			if alt, ok := extractNestedString(imageArr, 3, 5, 0); ok {
+				img.AltText = alt
+			}
+
+			key := img.URL + "|" + img.B64JSON
+			if !seen[key] {
+				seen[key] = true
+				images = append(images, img)
+			}
+		}
+	}
+
+	if len(images) == 0 {
+		return extractImagesFromGeminiValue(payload)
+	}
+
+	return images
+}
+
+func extractImagesFromGeminiValue(value interface{}) []Image {
+	seen := map[string]bool{}
+	images := make([]Image, 0)
+
+	walkValue(value, func(node interface{}) {
+		arr, ok := node.([]interface{})
+		if !ok {
+			return
+		}
+		if len(arr) < 4 {
+			return
+		}
+
+		url, ok := extractNestedString(arr, 0, 3, 3)
+		if !ok || strings.TrimSpace(url) == "" {
+			url, ok = extractNestedString(arr, 0, 3, 2)
+			if !ok || strings.TrimSpace(url) == "" {
+				return
+			}
+		}
+
+		if !(strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") || strings.HasPrefix(url, "data:image/")) {
+			return
+		}
+
+		img := Image{URL: strings.TrimSpace(url)}
+		if titleIndex, ok := extractNestedFloat(arr, 3, 6); ok {
+			img.Title = "[GeneratedImage " + strconv.Itoa(int(titleIndex)) + "]"
+		}
+		if alt, ok := extractNestedString(arr, 3, 5, 0); ok {
+			img.AltText = alt
+		}
+
+		key := img.URL + "|" + img.B64JSON
+		if !seen[key] {
+			seen[key] = true
+			images = append(images, img)
+		}
+	})
+
+	return images
+}
+
+func extractNestedString(value interface{}, path ...int) (string, bool) {
+	current := value
+	for _, idx := range path {
+		arr, ok := current.([]interface{})
+		if !ok || idx < 0 || idx >= len(arr) {
+			return "", false
+		}
+		current = arr[idx]
+	}
+
+	str, ok := current.(string)
+	if !ok {
+		return "", false
+	}
+
+	str = strings.TrimSpace(str)
+	if str == "" {
+		return "", false
+	}
+
+	return str, true
+}
+
+func extractNestedFloat(value interface{}, path ...int) (float64, bool) {
+	current := value
+	for _, idx := range path {
+		arr, ok := current.([]interface{})
+		if !ok || idx < 0 || idx >= len(arr) {
+			return 0, false
+		}
+		current = arr[idx]
+	}
+
+	num, ok := current.(float64)
+	if !ok {
+		return 0, false
+	}
+
+	return num, true
+}
+
+func walkValue(value interface{}, visit func(interface{})) {
+	visit(value)
+	switch typed := value.(type) {
+	case []interface{}:
+		for _, item := range typed {
+			walkValue(item, visit)
+		}
+	case map[string]interface{}:
+		for _, item := range typed {
+			walkValue(item, visit)
+		}
+	}
+}
+
+func imageFromString(value string) *Image {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		if strings.Contains(lower, ".png") || strings.Contains(lower, ".jpg") || strings.Contains(lower, ".jpeg") || strings.Contains(lower, ".webp") || strings.Contains(lower, "image") || strings.Contains(lower, "googleusercontent") {
+			return &Image{URL: trimmed}
+		}
+	}
+	if looksLikeBase64Image(trimmed) {
+		return &Image{B64JSON: trimmed, MimeType: detectMimeTypeFromBase64(trimmed)}
+	}
+	return nil
+}
+
+func imageFromMap(value map[string]interface{}) *Image {
+	image := &Image{}
+
+	if url, ok := firstStringMapValue(value, "url", "uri", "image_url", "src"); ok {
+		image.URL = url
+	}
+	if b64, ok := firstStringMapValue(value, "b64_json", "data", "image_bytes", "inline_data"); ok && looksLikeBase64Image(b64) {
+		image.B64JSON = b64
+	}
+	if mimeType, ok := firstStringMapValue(value, "mime_type", "mimeType", "content_type"); ok {
+		image.MimeType = mimeType
+	}
+	if title, ok := firstStringMapValue(value, "title", "label"); ok {
+		image.Title = title
+	}
+	if altText, ok := firstStringMapValue(value, "alt", "alt_text", "altText"); ok {
+		image.AltText = altText
+	}
+
+	if image.URL == "" && image.B64JSON == "" {
+		return nil
+	}
+	if image.MimeType == "" && image.B64JSON != "" {
+		image.MimeType = detectMimeTypeFromBase64(image.B64JSON)
+	}
+	return image
+}
+
+func firstStringMapValue(value map[string]interface{}, keys ...string) (string, bool) {
+	for _, key := range keys {
+		raw, ok := value[key]
+		if !ok {
+			continue
+		}
+		if str, ok := raw.(string); ok && strings.TrimSpace(str) != "" {
+			return strings.TrimSpace(str), true
+		}
+	}
+	return "", false
+}
+
+func looksLikeBase64Image(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "data:image/") {
+		return true
+	}
+	if len(trimmed) < 128 {
+		return false
+	}
+	matched, _ := regexp.MatchString(`^[A-Za-z0-9+/=_-]+$`, trimmed)
+	return matched
+}
+
+func detectMimeTypeFromBase64(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "data:image/") {
+		parts := strings.SplitN(trimmed, ";", 2)
+		if len(parts) > 0 {
+			return strings.TrimPrefix(parts[0], "data:")
+		}
+	}
+	return "image/png"
+}
+
+func extractFirstString(value interface{}, visited map[string]bool) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" || imageFromString(trimmed) != nil {
+			return "", false
+		}
+		return trimmed, true
+	case []interface{}:
+		for _, item := range typed {
+			if result, ok := extractFirstString(item, visited); ok {
+				return result, true
+			}
+		}
+	case map[string]interface{}:
+		for key, item := range typed {
+			if visited[key] {
+				continue
+			}
+			visited[key] = true
+			if result, ok := extractFirstString(item, visited); ok {
+				return result, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (cs *CookieStore) ToHTTPCookies() []*http.Cookie {
@@ -835,22 +1381,22 @@ func (c *Client) ClearCookieCache() error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	
+
 	return nil
 }
 
 const (
-EndpointGoogle        = "https://www.google.com"
-EndpointInit          = "https://gemini.google.com/app"
-EndpointGenerate      = "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
-EndpointRotateCookies = "https://accounts.google.com/RotateCookies"
-EndpointBatchExec     = "https://gemini.google.com/_/BardChatUi/data/batchexecute"
+	EndpointGoogle        = "https://www.google.com"
+	EndpointInit          = "https://gemini.google.com/app"
+	EndpointGenerate      = "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
+	EndpointRotateCookies = "https://accounts.google.com/RotateCookies"
+	EndpointBatchExec     = "https://gemini.google.com/_/BardChatUi/data/batchexecute"
 )
 
 var DefaultHeaders = map[string]string{
-"Content-Type":  "application/x-www-form-urlencoded;charset=utf-8",
-"Origin":        "https://gemini.google.com",
-"Referer":       "https://gemini.google.com/",
-"User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-"X-Same-Domain": "1",
+	"Content-Type":  "application/x-www-form-urlencoded;charset=utf-8",
+	"Origin":        "https://gemini.google.com",
+	"Referer":       "https://gemini.google.com/",
+	"User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+	"X-Same-Domain": "1",
 }

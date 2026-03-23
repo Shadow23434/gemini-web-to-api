@@ -75,11 +75,11 @@ func (m ChatMessage) ToCommonMessage() models.Message {
 
 // ChatCompletionRequest represents OpenAI chat completion request
 type ChatCompletionRequest struct {
-	Model       string           `json:"model"`
-	Messages    []ChatMessage    `json:"messages"`
-	Stream      bool             `json:"stream,omitempty"`
-	Temperature float32          `json:"temperature,omitempty"`
-	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Model       string        `json:"model"`
+	Messages    []ChatMessage `json:"messages"`
+	Stream      bool          `json:"stream,omitempty"`
+	Temperature float32       `json:"temperature,omitempty"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
 }
 
 // ChatCompletionResponse represents OpenAI chat completion response
@@ -113,4 +113,25 @@ type ChunkChoice struct {
 	Index        int          `json:"index"`
 	Delta        models.Delta `json:"delta"`
 	FinishReason string       `json:"finish_reason,omitempty"`
+}
+
+// ImageGenerationRequest represents an OpenAI-compatible image generation request.
+type ImageGenerationRequest struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	N              int    `json:"n,omitempty"`
+	Size           string `json:"size,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"`
+}
+
+// ImageGenerationResponse represents an OpenAI-compatible image generation response.
+type ImageGenerationResponse struct {
+	Created int64       `json:"created"`
+	Data    []ImageData `json:"data"`
+}
+
+// ImageData represents a generated image payload.
+type ImageData struct {
+	URL     string `json:"url,omitempty"`
+	B64JSON string `json:"b64_json,omitempty"`
 }

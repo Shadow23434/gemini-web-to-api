@@ -15,6 +15,26 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/": {
+            "get": {
+                "description": "Returns API metadata and available endpoint formats",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "API Information",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
         "/claude/v1/messages": {
             "post": {
                 "description": "Sends a message to the Claude model",
@@ -219,6 +239,47 @@ const docTemplate = `{
                 }
             }
         },
+        "/gemini/v1beta/models/{model}:generateImages": {
+            "post": {
+                "description": "Generates images using the Gemini model",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Generate Images (Gemini)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Image Generation Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.GeminiImageGenerationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.GeminiGenerateResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/gemini/v1beta/models/{model}:streamGenerateContent": {
             "post": {
                 "description": "Streams generated content using the Gemini model",
@@ -290,7 +351,7 @@ const docTemplate = `{
         },
         "/openai/v1/chat/completions": {
             "post": {
-                "description": "Generates a completion for the chat message",
+                "description": "Generates a completion for the chat message (supports stream=true)",
                 "consumes": [
                     "application/json"
                 ],
@@ -317,6 +378,54 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/dto.ChatCompletionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/openai/v1/images/generations": {
+            "post": {
+                "description": "Generates images from a prompt using the selected model",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OpenAI"
+                ],
+                "summary": "Image Generations (OpenAI)",
+                "parameters": [
+                    {
+                        "description": "Image Generation Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.ImageGenerationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.ImageGenerationResponse"
                         }
                     },
                     "400": {
@@ -387,7 +496,7 @@ const docTemplate = `{
                 "messages": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.Message"
+                        "$ref": "#/definitions/dto.ChatMessage"
                     }
                 },
                 "model": {
@@ -424,6 +533,17 @@ const docTemplate = `{
                 },
                 "usage": {
                     "$ref": "#/definitions/models.Usage"
+                }
+            }
+        },
+        "dto.ChatMessage": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "$ref": "#/definitions/dto.MessageContent"
+                },
+                "role": {
+                    "type": "string"
                 }
             }
         },
@@ -467,6 +587,17 @@ const docTemplate = `{
                 }
             }
         },
+        "dto.FileData": {
+            "type": "object",
+            "properties": {
+                "fileUri": {
+                    "type": "string"
+                },
+                "mimeType": {
+                    "type": "string"
+                }
+            }
+        },
         "dto.GeminiGenerateRequest": {
             "type": "object",
             "properties": {
@@ -501,6 +632,23 @@ const docTemplate = `{
                 },
                 "usageMetadata": {
                     "$ref": "#/definitions/dto.UsageMetadata"
+                }
+            }
+        },
+        "dto.GeminiImageGenerationRequest": {
+            "type": "object",
+            "properties": {
+                "imageCount": {
+                    "type": "integer"
+                },
+                "imageSize": {
+                    "type": "string"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "responseMimeType": {
+                    "type": "string"
                 }
             }
         },
@@ -555,6 +703,51 @@ const docTemplate = `{
                 }
             }
         },
+        "dto.ImageData": {
+            "type": "object",
+            "properties": {
+                "b64_json": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ImageGenerationRequest": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string"
+                },
+                "n": {
+                    "type": "integer"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "response_format": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ImageGenerationResponse": {
+            "type": "object",
+            "properties": {
+                "created": {
+                    "type": "integer"
+                },
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ImageData"
+                    }
+                }
+            }
+        },
         "dto.InlineData": {
             "type": "object",
             "properties": {
@@ -562,6 +755,14 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "mimeType": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.MessageContent": {
+            "type": "object",
+            "properties": {
+                "text": {
                     "type": "string"
                 }
             }
@@ -623,6 +824,9 @@ const docTemplate = `{
         "dto.Part": {
             "type": "object",
             "properties": {
+                "fileData": {
+                    "$ref": "#/definitions/dto.FileData"
+                },
                 "inlineData": {
                     "$ref": "#/definitions/dto.InlineData"
                 },

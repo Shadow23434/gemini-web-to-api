@@ -28,7 +28,45 @@ func (s *GeminiService) ListModels() []providers.ModelInfo {
 }
 
 func (s *GeminiService) GenerateContent(ctx context.Context, modelID string, req dto.GeminiGenerateRequest) (*dto.GeminiGenerateResponse, error) {
-	// Logic: Extract prompt
+	prompt := strings.TrimSpace(extractPrompt(req))
+	if prompt == "" {
+		return nil, fmt.Errorf("empty content")
+	}
+
+	response, err := s.client.GenerateContent(ctx, prompt, providers.WithModel(modelID))
+	if err != nil {
+		return nil, err
+	}
+
+	return buildGeminiGenerateResponse(response), nil
+}
+
+func (s *GeminiService) GenerateImages(ctx context.Context, modelID string, req dto.GeminiImageGenerationRequest) (*dto.GeminiGenerateResponse, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return nil, fmt.Errorf("empty prompt")
+	}
+
+	opts := []providers.GenerateOption{providers.WithModel(modelID)}
+	if req.ImageCount > 0 {
+		opts = append(opts, providers.WithImageCount(req.ImageCount))
+	}
+	if req.ImageSize != "" {
+		opts = append(opts, providers.WithImageSize(req.ImageSize))
+	}
+	if req.ResponseMimeType != "" {
+		opts = append(opts, providers.WithResponseFormat(req.ResponseMimeType))
+	}
+
+	response, err := s.client.GenerateImages(ctx, prompt, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return buildGeminiGenerateResponse(response), nil
+}
+
+func extractPrompt(req dto.GeminiGenerateRequest) string {
 	var promptBuilder strings.Builder
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
@@ -38,35 +76,40 @@ func (s *GeminiService) GenerateContent(ctx context.Context, modelID string, req
 			}
 		}
 	}
+	return promptBuilder.String()
+}
 
-	prompt := strings.TrimSpace(promptBuilder.String())
-	if prompt == "" {
-		return nil, fmt.Errorf("empty content")
+func buildGeminiGenerateResponse(response *providers.Response) *dto.GeminiGenerateResponse {
+	parts := make([]dto.Part, 0, len(response.Images)+1)
+	if strings.TrimSpace(response.Text) != "" {
+		parts = append(parts, dto.Part{Text: response.Text})
+	}
+	for _, image := range response.Images {
+		part := dto.Part{}
+		if image.B64JSON != "" {
+			part.InlineData = &dto.InlineData{MimeType: image.MimeType, Data: image.B64JSON}
+		} else if image.URL != "" {
+			part.FileData = &dto.FileData{MimeType: image.MimeType, FileURI: image.URL}
+		}
+		if part.InlineData != nil || part.FileData != nil {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, dto.Part{Text: ""})
 	}
 
-	// Logic: Call Provider
-	opts := []providers.GenerateOption{providers.WithModel(modelID)}
-	response, err := s.client.GenerateContent(ctx, prompt, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Logic: Construct Response
 	return &dto.GeminiGenerateResponse{
-		Candidates: []dto.Candidate{
-			{
-				Index: 0,
-				Content: dto.Content{
-					Role:  "model",
-					Parts: []dto.Part{{Text: response.Text}},
-				},
-				FinishReason: "STOP",
+		Candidates: []dto.Candidate{{
+			Index: 0,
+			Content: dto.Content{
+				Role:  "model",
+				Parts: parts,
 			},
-		},
-		UsageMetadata: &dto.UsageMetadata{
-			TotalTokenCount: 0,
-		},
-	}, nil
+			FinishReason: "STOP",
+		}},
+		UsageMetadata: &dto.UsageMetadata{TotalTokenCount: 0},
+	}
 }
 
 func (s *GeminiService) IsHealthy() bool {

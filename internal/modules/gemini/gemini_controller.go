@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,10 +62,17 @@ func (h *GeminiController) HandleV1BetaModels(c fiber.Ctx) error {
 	availableModels := h.service.ListModels()
 	var geminiModels []dto.GeminiModel
 	for _, m := range availableModels {
+		methods := []string{}
+		if m.SupportsTextGeneration {
+			methods = append(methods, "generateContent", "streamGenerateContent")
+		}
+		if m.SupportsImageGeneration {
+			methods = append(methods, "generateImages")
+		}
 		geminiModels = append(geminiModels, dto.GeminiModel{
 			Name:                       "models/" + m.ID,
 			DisplayName:                m.ID,
-			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+			SupportedGenerationMethods: methods,
 		})
 	}
 	return c.JSON(dto.GeminiModelsResponse{Models: geminiModels})
@@ -100,6 +108,41 @@ func (h *GeminiController) HandleV1BetaGenerateContent(c fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(common.ErrorToResponse(err, "invalid_request_error"))
 		}
 		h.log.Error("GenerateContent failed", zap.Error(err), zap.String("model", model))
+		return c.Status(fiber.StatusInternalServerError).JSON(common.ErrorToResponse(err, "api_error"))
+	}
+
+	return c.JSON(response)
+}
+
+// HandleV1BetaGenerateImages handles the Gemini image generation endpoint.
+// @Summary Generate Images (Gemini)
+// @Description Generates images using the Gemini model
+// @Tags Gemini
+// @Accept json
+// @Produce json
+// @Param model path string true "Model ID"
+// @Param request body dto.GeminiImageGenerationRequest true "Image Generation Request"
+// @Success 200 {object} dto.GeminiGenerateResponse
+// @Router /gemini/v1beta/models/{model}:generateImages [post]
+func (h *GeminiController) HandleV1BetaGenerateImages(c fiber.Ctx) error {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	model := c.Params("model")
+	var req dto.GeminiImageGenerationRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(common.ErrorToResponse(fmt.Errorf("invalid request body: %w", err), "invalid_request_error"))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	response, err := h.service.GenerateImages(ctx, model, req)
+	if err != nil {
+		if err.Error() == "empty prompt" || strings.Contains(err.Error(), "does not support image generation") {
+			return c.Status(fiber.StatusBadRequest).JSON(common.ErrorToResponse(err, "invalid_request_error"))
+		}
+		h.log.Error("GenerateImages failed", zap.Error(err), zap.String("model", model))
 		return c.Status(fiber.StatusInternalServerError).JSON(common.ErrorToResponse(err, "api_error"))
 	}
 
@@ -218,5 +261,6 @@ func (h *GeminiController) HandleV1BetaStreamGenerateContent(c fiber.Ctx) error 
 func (g *GeminiController) Register(group fiber.Router) {
 	group.Get("/models", g.HandleV1BetaModels)
 	group.Post("/models/:model\\:generateContent", g.HandleV1BetaGenerateContent)
+	group.Post("/models/:model\\:generateImages", g.HandleV1BetaGenerateImages)
 	group.Post("/models/:model\\:streamGenerateContent", g.HandleV1BetaStreamGenerateContent)
 }

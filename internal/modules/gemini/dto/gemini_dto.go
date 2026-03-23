@@ -31,12 +31,19 @@ type Content struct {
 type Part struct {
 	Text       string      `json:"text,omitempty"`
 	InlineData *InlineData `json:"inlineData,omitempty"`
+	FileData   *FileData   `json:"fileData,omitempty"`
 }
 
 // InlineData represents inline data (e.g., images)
 type InlineData struct {
 	MimeType string `json:"mimeType"`
 	Data     string `json:"data"`
+}
+
+// FileData represents a URL-backed file or image.
+type FileData struct {
+	MimeType string `json:"mimeType,omitempty"`
+	FileURI  string `json:"fileUri,omitempty"`
 }
 
 // GenerationConfig represents generation configuration
@@ -49,16 +56,16 @@ type GenerationConfig struct {
 
 // GeminiGenerateResponse represents a Gemini generate response
 type GeminiGenerateResponse struct {
-	Candidates   []Candidate    `json:"candidates"`
+	Candidates    []Candidate    `json:"candidates"`
 	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
 }
 
 // Candidate represents a candidate response
 type Candidate struct {
-	Index        int       `json:"index"`
-	Content      Content   `json:"content"`
-	FinishReason string    `json:"finishReason,omitempty"`
-	FinishMessage string   `json:"finishMessage,omitempty"`
+	Index         int     `json:"index"`
+	Content       Content `json:"content"`
+	FinishReason  string  `json:"finishReason,omitempty"`
+	FinishMessage string  `json:"finishMessage,omitempty"`
 }
 
 // UsageMetadata represents usage metadata
@@ -66,4 +73,12 @@ type UsageMetadata struct {
 	PromptTokenCount     int32 `json:"promptTokenCount"`
 	CandidatesTokenCount int32 `json:"candidatesTokenCount"`
 	TotalTokenCount      int32 `json:"totalTokenCount"`
+}
+
+// GeminiImageGenerationRequest represents a Gemini-native image generation request.
+type GeminiImageGenerationRequest struct {
+	Prompt           string `json:"prompt"`
+	ImageCount       int    `json:"imageCount,omitempty"`
+	ImageSize        string `json:"imageSize,omitempty"`
+	ResponseMimeType string `json:"responseMimeType,omitempty"`
 }

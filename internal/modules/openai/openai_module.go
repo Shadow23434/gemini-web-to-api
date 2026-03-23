@@ -30,4 +30,5 @@ func RegisterRootAliases(app *fiber.App, c *OpenAIController) {
 	// and append /chat/completions directly without a version prefix
 	app.Get("/models", c.HandleModels)
 	app.Post("/chat/completions", c.HandleChatCompletions)
+	app.Post("/images/generations", c.HandleImageGenerations)
 }

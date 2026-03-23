@@ -17,7 +17,7 @@ definitions:
         type: integer
       messages:
         items:
-          $ref: '#/definitions/models.Message'
+          $ref: '#/definitions/dto.ChatMessage'
         type: array
       model:
         type: string
@@ -42,6 +42,13 @@ definitions:
         type: string
       usage:
         $ref: '#/definitions/models.Usage'
+    type: object
+  dto.ChatMessage:
+    properties:
+      content:
+        $ref: '#/definitions/dto.MessageContent'
+      role:
+        type: string
     type: object
   dto.Choice:
     properties:
@@ -69,6 +76,13 @@ definitions:
       role:
         type: string
     type: object
+  dto.FileData:
+    properties:
+      fileUri:
+        type: string
+      mimeType:
+        type: string
+    type: object
   dto.GeminiGenerateRequest:
     properties:
       contents:
@@ -92,6 +106,17 @@ definitions:
         type: array
       usageMetadata:
         $ref: '#/definitions/dto.UsageMetadata'
+    type: object
+  dto.GeminiImageGenerationRequest:
+    properties:
+      imageCount:
+        type: integer
+      imageSize:
+        type: string
+      prompt:
+        type: string
+      responseMimeType:
+        type: string
     type: object
   dto.GeminiModel:
     properties:
@@ -126,11 +151,45 @@ definitions:
       topP:
         type: number
     type: object
+  dto.ImageData:
+    properties:
+      b64_json:
+        type: string
+      url:
+        type: string
+    type: object
+  dto.ImageGenerationRequest:
+    properties:
+      model:
+        type: string
+      "n":
+        type: integer
+      prompt:
+        type: string
+      response_format:
+        type: string
+      size:
+        type: string
+    type: object
+  dto.ImageGenerationResponse:
+    properties:
+      created:
+        type: integer
+      data:
+        items:
+          $ref: '#/definitions/dto.ImageData'
+        type: array
+    type: object
   dto.InlineData:
     properties:
       data:
         type: string
       mimeType:
+        type: string
+    type: object
+  dto.MessageContent:
+    properties:
+      text:
         type: string
     type: object
   dto.MessageRequest:
@@ -171,6 +230,8 @@ definitions:
     type: object
   dto.Part:
     properties:
+      fileData:
+        $ref: '#/definitions/dto.FileData'
       inlineData:
         $ref: '#/definitions/dto.InlineData'
       text:
@@ -239,6 +300,19 @@ info:
   title: Gemini Web To API
   version: "1.0"
 paths:
+  /:
+    get:
+      description: Returns API metadata and available endpoint formats
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      summary: API Information
+      tags:
+      - System
   /claude/v1/messages:
     post:
       consumes:
@@ -374,6 +448,33 @@ paths:
       summary: Generate Content (Gemini)
       tags:
       - Gemini
+  /gemini/v1beta/models/{model}:generateImages:
+    post:
+      consumes:
+      - application/json
+      description: Generates images using the Gemini model
+      parameters:
+      - description: Model ID
+        in: path
+        name: model
+        required: true
+        type: string
+      - description: Image Generation Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.GeminiImageGenerationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.GeminiGenerateResponse'
+      summary: Generate Images (Gemini)
+      tags:
+      - Gemini
   /gemini/v1beta/models/{model}:streamGenerateContent:
     post:
       consumes:
@@ -424,7 +525,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Generates a completion for the chat message
+      description: Generates a completion for the chat message (supports stream=true)
       parameters:
       - description: Chat Completion Request
         in: body
@@ -450,6 +551,38 @@ paths:
             additionalProperties: true
             type: object
       summary: Chat Completions (OpenAI)
+      tags:
+      - OpenAI
+  /openai/v1/images/generations:
+    post:
+      consumes:
+      - application/json
+      description: Generates images from a prompt using the selected model
+      parameters:
+      - description: Image Generation Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ImageGenerationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ImageGenerationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Image Generations (OpenAI)
       tags:
       - OpenAI
   /openai/v1/models:
