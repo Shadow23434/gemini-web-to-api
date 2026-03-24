@@ -134,7 +134,7 @@ func (h *GeminiController) HandleV1BetaGenerateImages(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(common.ErrorToResponse(fmt.Errorf("invalid request body: %w", err), "invalid_request_error"))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	response, err := h.service.GenerateImages(ctx, model, req)

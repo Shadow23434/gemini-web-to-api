@@ -28,7 +28,9 @@ type Client struct {
 	httpClient   *req.Client
 	cookies      *CookieStore
 	at           string
-	mu           sync.RWMutex // protects: at, healthy, accountEmail, cachedModels
+	sid          string
+	buildLabel   string
+	mu           sync.RWMutex // protects: at, sid, buildLabel, healthy, accountEmail, cachedModels
 	healthy      bool
 	accountEmail string
 	log          *zap.Logger
@@ -51,6 +53,28 @@ const (
 	defaultRefreshIntervalMinutes = 30
 )
 
+type imageRequestMetadata struct {
+	ConversationID string
+	ResponseID     string
+	ChoiceID       string
+	Tools          []string
+}
+
+type imageProgressError struct {
+	Message  string
+	Metadata *imageRequestMetadata
+}
+
+func (e *imageProgressError) Error() string {
+	if e == nil {
+		return "image generation in progress"
+	}
+	if strings.TrimSpace(e.Message) != "" {
+		return e.Message
+	}
+	return "image generation in progress"
+}
+
 func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
 	cookies := &CookieStore{
 		Secure1PSID:   cfg.Gemini.Secure1PSID,
@@ -59,7 +83,7 @@ func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
 	}
 
 	client := req.NewClient().
-		SetTimeout(2 * time.Minute).
+		SetTimeout(6 * time.Minute).
 		SetCommonHeaders(DefaultHeaders)
 
 	refreshIntervalMinutes := cfg.Gemini.RefreshInterval
@@ -278,8 +302,13 @@ func (c *Client) refreshSessionToken() error {
 		}
 	}
 
+	sid := extractGeminiSessionID(body)
+	buildLabel := extractGeminiBuildLabel(body)
+
 	c.mu.Lock()
 	c.at = matches[1]
+	c.sid = sid
+	c.buildLabel = buildLabel
 	c.healthy = true
 	c.accountEmail = accountEmail
 	c.mu.Unlock()
@@ -310,6 +339,37 @@ func extractGoogleAccountEmail(body string) string {
 		return strings.TrimSpace(strings.Trim(matches[1], `"'`))
 	}
 
+	return ""
+}
+
+func extractGeminiSessionID(body string) string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`"FdrFJe":"([\d-]+)"`),
+		regexp.MustCompile(`\["FdrFJe","([\d-]+)"\]`),
+	}
+	for _, pattern := range patterns {
+		if matches := pattern.FindStringSubmatch(body); len(matches) >= 2 {
+			return strings.TrimSpace(matches[1])
+		}
+	}
+	return ""
+}
+
+func extractGeminiBuildLabel(body string) string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`"cfb2h":"([^"]+)"`),
+		regexp.MustCompile(`\["cfb2h","([^"]+)"\]`),
+		regexp.MustCompile(`"bl":"([^"]+)"`),
+		regexp.MustCompile(`boq_[A-Za-z0-9_-]+_[0-9]{8}\.[0-9]{2}_p[0-9]+`),
+	}
+	for _, pattern := range patterns {
+		if matches := pattern.FindStringSubmatch(body); len(matches) >= 2 {
+			return strings.TrimSpace(matches[1])
+		}
+		if match := pattern.FindString(body); match != "" {
+			return strings.TrimSpace(match)
+		}
+	}
 	return ""
 }
 
@@ -507,12 +567,22 @@ func (c *Client) GenerateImages(ctx context.Context, prompt string, options ...G
 		return nil, fmt.Errorf("model '%s' does not support image generation", config.Model)
 	}
 
-	payload, err := buildImageGeneratePayload(prompt, config)
+	payload, err := buildImageGeneratePayload(prompt, config, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.executeGenerationRequest(ctx, at, payload, c.parseImageResponse, "GenerateImages")
+	response, err := c.executeGenerationRequest(ctx, at, payload, c.parseImageResponse, "GenerateImages")
+	if err == nil {
+		return response, nil
+	}
+
+	var progressErr *imageProgressError
+	if !errors.As(err, &progressErr) {
+		return nil, err
+	}
+
+	return c.pollImageGeneration(ctx, at, prompt, config, progressErr)
 }
 
 func (c *Client) prepareGenerateConfig(options ...GenerateOption) (*GenerateConfig, string, ModelInfo, error) {
@@ -561,8 +631,41 @@ func buildTextGeneratePayload(prompt, model string) (map[string]string, error) {
 	return buildGenerationFormData(inner)
 }
 
-func buildImageGeneratePayload(prompt string, config *GenerateConfig) (map[string]string, error) {
-	return buildTextGeneratePayload(prompt, config.Model)
+func buildImageGeneratePayload(prompt string, config *GenerateConfig, metadata *imageRequestMetadata) (map[string]string, error) {
+	hasMetadata := metadata != nil && (metadata.ConversationID != "" || metadata.ResponseID != "" || metadata.ChoiceID != "")
+	if !hasMetadata {
+		return buildTextGeneratePayload(prompt, config.Model)
+	}
+
+	conversation := []interface{}{nil, nil, nil, nil, nil, []interface{}{}}
+	if metadata != nil {
+		if metadata.ConversationID != "" {
+			conversation[0] = metadata.ConversationID
+		}
+		if metadata.ResponseID != "" {
+			conversation[1] = metadata.ResponseID
+		}
+		if metadata.ChoiceID != "" {
+			conversation[2] = metadata.ChoiceID
+		}
+	}
+
+	inner := []interface{}{
+		[]interface{}{prompt, 0, nil, []interface{}{}, nil, nil, 0},
+		[]interface{}{"en"},
+		conversation,
+		nil,
+		nil,
+		nil,
+		[]interface{}{1},
+		0,
+		[]interface{}{},
+		[]interface{}{},
+		1,
+		0,
+	}
+
+	return buildGenerationFormData(inner)
 }
 
 func buildGenerationFormData(inner []interface{}) (map[string]string, error) {
@@ -582,8 +685,168 @@ func buildGenerationFormData(inner []interface{}) (map[string]string, error) {
 	}, nil
 }
 
+func extractModelIDFromFormData(formData map[string]string) string {
+	payload, ok := formData["f.req"]
+	if !ok || strings.TrimSpace(payload) == "" {
+		return ""
+	}
+
+	var outer []interface{}
+	if err := json.Unmarshal([]byte(payload), &outer); err != nil || len(outer) < 2 {
+		return ""
+	}
+	innerString, ok := outer[1].(string)
+	if !ok || strings.TrimSpace(innerString) == "" {
+		return ""
+	}
+
+	var inner []interface{}
+	if err := json.Unmarshal([]byte(innerString), &inner); err != nil || len(inner) == 0 {
+		return ""
+	}
+
+	for i := len(inner) - 1; i >= 0; i-- {
+		if model, ok := inner[i].(string); ok && strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-") {
+			return strings.TrimSpace(model)
+		}
+	}
+	return ""
+}
+
+func geminiModelHeaderValue(modelID string, cachedModels []ModelInfo) string {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if modelID == "" {
+		return ""
+	}
+	if strings.Contains(modelID, "image") {
+		return `[1,null,null,null,"e6fa609c3fa255c0",null,null,null,[4]]`
+	}
+	for _, model := range cachedModels {
+		if strings.EqualFold(strings.TrimSpace(model.ID), modelID) && model.SupportsImageGeneration {
+			return `[1,null,null,null,"e6fa609c3fa255c0",null,null,null,[4]]`
+		}
+	}
+	return ""
+}
+
+func (c *Client) pollImageGeneration(ctx context.Context, at, prompt string, config *GenerateConfig, progress *imageProgressError) (*Response, error) {
+	metadata := &imageRequestMetadata{}
+	if progress != nil && progress.Metadata != nil {
+		metadata = progress.Metadata
+	}
+
+	var lastErr error = progress
+	for attempt := 1; attempt <= 120; attempt++ {
+		wait := 2 * time.Second
+		if attempt > 10 {
+			wait = 5 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+
+		payload, err := buildImageGeneratePayload(prompt, config, metadata)
+		if err != nil {
+			return nil, err
+		}
+
+		response, err := c.executeGenerationRequest(ctx, at, payload, c.parseImageResponse, "GenerateImagesPoll")
+		if err == nil {
+			if response.Metadata != nil {
+				mergeImageResponseMetadata(metadata, response.Metadata)
+			}
+			return response, nil
+		}
+
+		var nextProgress *imageProgressError
+		if errors.As(err, &nextProgress) {
+			lastErr = err
+			if nextProgress != nil && nextProgress.Metadata != nil {
+				mergeImageRequestMetadata(metadata, nextProgress.Metadata)
+			}
+			continue
+		}
+
+		return nil, err
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("timed out waiting for Gemini image generation: %w", lastErr)
+	}
+	return nil, fmt.Errorf("timed out waiting for Gemini image generation")
+}
+
+func mergeImageRequestMetadata(dst, src *imageRequestMetadata) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.ConversationID == "" {
+		dst.ConversationID = src.ConversationID
+	}
+	if dst.ResponseID == "" {
+		dst.ResponseID = src.ResponseID
+	}
+	if dst.ChoiceID == "" {
+		dst.ChoiceID = src.ChoiceID
+	}
+	seen := map[string]bool{}
+	for _, tool := range dst.Tools {
+		seen[tool] = true
+	}
+	for _, tool := range src.Tools {
+		if !seen[tool] {
+			dst.Tools = append(dst.Tools, tool)
+			seen[tool] = true
+		}
+	}
+}
+
+func mergeImageResponseMetadata(dst *imageRequestMetadata, metadata map[string]any) {
+	if dst == nil || metadata == nil {
+		return
+	}
+	mergeImageRequestMetadata(dst, &imageRequestMetadata{
+		ConversationID: stringMetadataValue(metadata, "cid"),
+		ResponseID:     stringMetadataValue(metadata, "rid"),
+		ChoiceID:       stringMetadataValue(metadata, "rcid"),
+		Tools:          stringSliceMetadataValue(metadata, "tools"),
+	})
+}
+
+func stringMetadataValue(metadata map[string]any, key string) string {
+	value, _ := metadata[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func stringSliceMetadataValue(metadata map[string]any, key string) []string {
+	raw, ok := metadata[key].([]string)
+	if ok {
+		return raw
+	}
+	items, ok := metadata[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if ok && strings.TrimSpace(text) != "" {
+			result = append(result, strings.TrimSpace(text))
+		}
+	}
+	return result
+}
+
 func (c *Client) executeGenerationRequest(ctx context.Context, at string, formData map[string]string, parser func(string) (*Response, error), operation string) (*Response, error) {
 	formData["at"] = at
+
+	c.mu.RLock()
+	sid := c.sid
+	buildLabel := c.buildLabel
+	cachedModels := append([]ModelInfo(nil), c.cachedModels...)
+	c.mu.RUnlock()
 
 	maxAttempts := c.maxRetries
 	if maxAttempts <= 0 {
@@ -611,11 +874,24 @@ func (c *Client) executeGenerationRequest(ctx context.Context, at string, formDa
 		}
 
 		httpStart := time.Now()
-		resp, err := c.httpClient.R().
+		request := c.httpClient.R().
 			SetContext(ctx).
 			SetFormData(formData).
-			SetQueryParam("at", at).
-			Post(EndpointGenerate)
+			SetQueryParam("at", at)
+		if headerValue := geminiModelHeaderValue(extractModelIDFromFormData(formData), cachedModels); headerValue != "" {
+			request.SetHeader("x-goog-ext-525001261-jspb", headerValue)
+		}
+		if strings.TrimSpace(buildLabel) != "" {
+			request.SetQueryParam("bl", buildLabel)
+		}
+		if strings.TrimSpace(sid) != "" {
+			request.SetQueryParam("f.sid", sid)
+		}
+		request.SetQueryParam("hl", "en")
+		request.SetQueryParam("rt", "c")
+		request.SetQueryParam("_reqid", strconv.FormatInt(time.Now().UnixMilli()%9000+1000, 10))
+
+		resp, err := request.Post(EndpointGenerate)
 
 		httpDuration := time.Since(httpStart)
 		if err != nil {
@@ -632,8 +908,8 @@ func (c *Client) executeGenerationRequest(ctx context.Context, at string, formDa
 		if resp.StatusCode != http.StatusOK {
 			body := resp.String()
 			sample := body
-			if len(sample) > 1000 {
-				sample = sample[:1000]
+			if len(sample) > 2000 {
+				sample = sample[:2000]
 			}
 			c.log.Warn("Generation request returned non-200",
 				zap.String("operation", operation),
@@ -641,8 +917,9 @@ func (c *Client) executeGenerationRequest(ctx context.Context, at string, formDa
 				zap.Int("attempt", attempt),
 				zap.Int("response_bytes", len(body)),
 				zap.String("response_sample", sample),
+				zap.Any("request_form_data", formData),
 			)
-			lastErr = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
+			lastErr = fmt.Errorf("generate failed with status: %d: %s", resp.StatusCode, sample)
 			if resp.StatusCode >= 500 {
 				c.log.Warn("Server error, will retry",
 					zap.String("operation", operation),
@@ -659,6 +936,10 @@ func (c *Client) executeGenerationRequest(ctx context.Context, at string, formDa
 		result, parseErr := parser(body)
 		parseDuration := time.Since(parseStart)
 		if parseErr != nil {
+			var progressErr *imageProgressError
+			if errors.As(parseErr, &progressErr) {
+				return nil, parseErr
+			}
 			lastErr = parseErr
 			c.log.Warn("Failed to parse response, will retry",
 				zap.String("operation", operation),
@@ -815,6 +1096,7 @@ func (c *Client) parseResponse(text string) (*Response, error) {
 
 func (c *Client) parseImageResponse(text string) (*Response, error) {
 	lines := strings.Split(text, "\n")
+	var pending *imageProgressError
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -829,7 +1111,16 @@ func (c *Client) parseImageResponse(text string) (*Response, error) {
 
 		for _, item := range root {
 			itemArray, ok := item.([]interface{})
-			if !ok || len(itemArray) < 3 {
+			if !ok {
+				continue
+			}
+			if looksLikePendingImageFrame(itemArray) {
+				if pending == nil {
+					pending = &imageProgressError{Message: "image generation in progress"}
+				}
+				continue
+			}
+			if len(itemArray) < 3 {
 				continue
 			}
 
@@ -846,7 +1137,21 @@ func (c *Client) parseImageResponse(text string) (*Response, error) {
 			if response, ok := parseImageResponsePayload(payload); ok {
 				return response, nil
 			}
+			if progress := parseImageProgressPayload(payload); progress != nil {
+				if pending == nil {
+					pending = progress
+				} else {
+					if pending.Metadata == nil {
+						pending.Metadata = progress.Metadata
+					} else if progress.Metadata != nil {
+						mergeImageRequestMetadata(pending.Metadata, progress.Metadata)
+					}
+				}
+			}
 		}
+	}
+	if pending != nil {
+		return nil, pending
 	}
 
 	if c.log != nil {
@@ -938,6 +1243,12 @@ func parseTextResponsePayload(payload []interface{}) (*Response, bool) {
 		}
 	}
 
+	if len(payload) > 2 {
+		if id, ok := payload[2].(string); ok {
+			rid = id
+		}
+	}
+
 	return &Response{
 		Text: resText,
 		Metadata: map[string]any{
@@ -964,7 +1275,73 @@ func parseImageResponsePayload(payload []interface{}) (*Response, bool) {
 	if text, ok := extractFirstString(payload, map[string]bool{}); ok {
 		response.Text = text
 	}
+	if metadata := extractImageRequestMetadata(payload); metadata != nil {
+		response.Metadata = map[string]any{
+			"cid":   metadata.ConversationID,
+			"rid":   metadata.ResponseID,
+			"rcid":  metadata.ChoiceID,
+			"tools": metadata.Tools,
+		}
+	}
 	return response, true
+}
+
+func parseImageProgressPayload(payload []interface{}) *imageProgressError {
+	metadata := extractImageRequestMetadata(payload)
+	message, hasProgress := extractImageProgressMessage(payload)
+	if !hasProgress && metadata == nil && !looksLikePendingImageFrame(payload) {
+		return nil
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "image generation in progress"
+	}
+	return &imageProgressError{
+		Message:  message,
+		Metadata: metadata,
+	}
+}
+
+func looksLikePendingImageFrame(payload []interface{}) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	if event, ok := payload[0].(string); ok && event == "wrb.fr" {
+		if len(payload) >= 6 {
+			if marker, ok := payload[5].([]interface{}); ok && len(marker) == 1 {
+				if code, ok := marker[0].(float64); ok && int(code) == 13 {
+					return true
+				}
+			}
+		}
+		if len(payload) >= 2 {
+			if status, ok := payload[1].([]interface{}); ok && len(status) == 0 {
+				return true
+			}
+		}
+	}
+	for _, item := range payload {
+		arr, ok := item.([]interface{})
+		if !ok || len(arr) == 0 {
+			continue
+		}
+		event, ok := arr[0].(string)
+		if !ok || event != "wrb.fr" {
+			continue
+		}
+		if len(arr) >= 6 {
+			if marker, ok := arr[5].([]interface{}); ok && len(marker) == 1 {
+				if code, ok := marker[0].(float64); ok && int(code) == 13 {
+					return true
+				}
+			}
+		}
+		if len(arr) >= 2 {
+			if status, ok := arr[1].([]interface{}); ok && len(status) == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractImagesFromJSONStringNodes(payload []interface{}) []Image {
@@ -1185,6 +1562,103 @@ func extractNestedFloat(value interface{}, path ...int) (float64, bool) {
 	}
 
 	return num, true
+}
+
+func extractImageProgressMessage(value interface{}) (string, bool) {
+	var message string
+	found := false
+	walkValue(value, func(node interface{}) {
+		if found {
+			return
+		}
+		text, ok := node.(string)
+		if !ok {
+			return
+		}
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			return
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "creating your image") || strings.Contains(lower, "data_analysis_tool") {
+			message = trimmed
+			found = true
+		}
+	})
+	return message, found
+}
+
+func extractImageRequestMetadata(value interface{}) *imageRequestMetadata {
+	metadata := &imageRequestMetadata{}
+	seenTools := map[string]bool{}
+
+	if payload, ok := value.([]interface{}); ok {
+		if len(payload) > 1 {
+			if ids, ok := payload[1].([]interface{}); ok {
+				if len(ids) > 0 {
+					if cid, ok := ids[0].(string); ok && strings.TrimSpace(cid) != "" {
+						metadata.ConversationID = strings.TrimSpace(cid)
+					}
+				}
+				if len(ids) > 1 {
+					if rid, ok := ids[1].(string); ok && strings.TrimSpace(rid) != "" {
+						metadata.ResponseID = strings.TrimSpace(rid)
+					}
+				}
+			}
+		}
+		if len(payload) > 4 {
+			if candidates, ok := payload[4].([]interface{}); ok && len(candidates) > 0 {
+				if firstCandidate, ok := candidates[0].([]interface{}); ok && len(firstCandidate) > 0 {
+					if choiceID, ok := firstCandidate[0].(string); ok && strings.TrimSpace(choiceID) != "" {
+						metadata.ChoiceID = strings.TrimSpace(choiceID)
+					}
+				}
+			}
+		}
+	}
+
+	walkValue(value, func(node interface{}) {
+		switch typed := node.(type) {
+		case string:
+			trimmed := strings.TrimSpace(typed)
+			if strings.HasPrefix(trimmed, "c_") && metadata.ConversationID == "" {
+				metadata.ConversationID = trimmed
+			}
+			if strings.HasPrefix(trimmed, "r_") {
+				if metadata.ResponseID == "" {
+					metadata.ResponseID = trimmed
+					return
+				}
+				if metadata.ChoiceID == "" && trimmed != metadata.ResponseID {
+					metadata.ChoiceID = trimmed
+					return
+				}
+			}
+			if trimmed == "data_analysis_tool" && !seenTools[trimmed] {
+				metadata.Tools = append(metadata.Tools, trimmed)
+				seenTools[trimmed] = true
+			}
+		case []interface{}:
+			if len(typed) == 0 {
+				return
+			}
+			first, ok := typed[0].(string)
+			if !ok {
+				return
+			}
+			trimmed := strings.TrimSpace(first)
+			if trimmed == "data_analysis_tool" && !seenTools[trimmed] {
+				metadata.Tools = append(metadata.Tools, trimmed)
+				seenTools[trimmed] = true
+			}
+		}
+	})
+
+	if metadata.ConversationID == "" && metadata.ResponseID == "" && metadata.ChoiceID == "" && len(metadata.Tools) == 0 {
+		return nil
+	}
+	return metadata
 }
 
 func walkValue(value interface{}, visit func(interface{})) {
